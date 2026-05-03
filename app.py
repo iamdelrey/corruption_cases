@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import html
 import io
 import json
@@ -38,7 +40,7 @@ FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 HOST = os.environ.get("CASES_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CASES_PORT", "8080"))
 ADMIN_LOGIN = os.environ.get("ADMIN_LOGIN", "admin")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "123")
 SESSION_COOKIE = "corruption_cases_session"
 SESSIONS: dict[str, dict[str, Any]] = {}
 
@@ -58,7 +60,7 @@ HEADER_NAV_LABELS = {
     "foreign": "Иностранные государства",
     "intl-orgs": "Международные организации",
 }
-VIOLATION_PRESETS = [
+LEGACY_VIOLATION_PRESETS = [
     "взяточничество",
     "злоупотребление полномочиями",
     "конфликт интересов",
@@ -68,6 +70,44 @@ VIOLATION_PRESETS = [
     "лоббизм / влияние в обход процедур",
     "иное",
 ]
+VIOLATION_PRESETS = [
+    "Взяточничество",
+    "Торговля влиянием",
+    "Коррупционное вымогательство",
+    "Коррупционное покровительство",
+    "Злоупотребление полномочиями",
+    "Закупочные манипуляции",
+    "Судебное влияние",
+    "Силовое покровительство",
+    "Хищение публичных средств",
+    "Легализация доходов",
+    "Незаконное финансирование",
+    "Фиктивные услуги",
+    "Иностранное влияние",
+    "Обход внутреннего контроля",
+]
+VIOLATION_DESCRIPTIONS = {
+    "Взяточничество": "Передача, получение или обещание незаконного вознаграждения за действие либо бездействие в интересах дающего или связанных с ним лиц.",
+    "Торговля влиянием": "Использование реального или предполагаемого влияния на должностных лиц, органы власти или процедуры принятия решений для получения неправомерной выгоды.",
+    "Коррупционное вымогательство": "Требование денег, услуг, имущества или иных выгод под угрозой неблагоприятных действий, отказа в услуге, давления или создания искусственных препятствий.",
+    "Коррупционное покровительство": "Предоставление необоснованной защиты, преимуществ, должностей, контрактов или доступа к ресурсам через личные связи, зависимость или обмен услугами.",
+    "Злоупотребление полномочиями": "Использование служебных полномочий вопреки публичным или корпоративным интересам для личной, групповой или политической выгоды.",
+    "Закупочные манипуляции": "Искажение конкурентных процедур закупок: подгонка условий, фиктивная конкуренция, сговор участников, завышение цены или выбор заранее определенного поставщика.",
+    "Судебное влияние": "Попытки повлиять на расследование, судебное решение, назначение наказания или процессуальные действия через давление, связи, вознаграждение или административный ресурс.",
+    "Силовое покровительство": "Использование правоохранительных, контрольных или силовых ресурсов для защиты интересов отдельных лиц, давления на конкурентов или блокирования проверок.",
+    "Хищение публичных средств": "Незаконное изъятие, присвоение, растрата или перенаправление бюджетных, государственных, муниципальных либо международных средств.",
+    "Легализация доходов": "Сокрытие происхождения средств, полученных незаконным путем, через сделки, компании, счета, имущество или цепочки посредников.",
+    "Незаконное финансирование": "Предоставление или получение средств с нарушением правил финансирования политической, общественной, спортивной, гуманитарной или иной деятельности.",
+    "Фиктивные услуги": "Использование мнимых договоров, консультаций, подрядов, отчетов или посреднических услуг для вывода средств, маскировки платежей или обхода контроля.",
+    "Иностранное влияние": "Непрозрачное воздействие иностранных лиц, структур или интересов на решения, должностных лиц, организации либо публичные процессы.",
+    "Обход внутреннего контроля": "Сознательное нарушение или формальное обходное исполнение процедур комплаенса, аудита, согласования, раскрытия конфликта интересов или финансового контроля.",
+}
+ABOUT_PAGE_LABELS = {
+    "goal": "Назначение библиотеки",
+    "methodology": "Принципы отбора и описания кейсов",
+    "contacts": "Обратная связь",
+    "education_note": "Правовой статус материалов",
+}
 DOCX_HEADINGS = {
     "фабула дела": "case_summary",
     "правовая квалификация": "legal_qualification",
@@ -89,6 +129,7 @@ FIELD_LABELS = {
     "governance_level": "Уровень управления",
     "risk_sector": "Отрасль риска",
     "violation_type": "Тип нарушения",
+    "violation_description": "Тип коррупционного поведения",
     "case_summary": "Фабула дела",
     "legal_qualification": "Правовая квалификация",
     "case_progress": "Ход дела",
@@ -114,6 +155,14 @@ def html_escape(value: Any) -> str:
 
 def normalize_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def normalize_country_name(value: str) -> str:
+    value = normalize_spaces(value).replace("ё", "е").replace("Ё", "Е")
+    base = re.split(r"[;,]", value, maxsplit=1)[0].strip()
+    if "соедин" in base.lower() and "штат" in base.lower() and "амер" in base.lower():
+        return "Соединенные Штаты Америки"
+    return base or value
 
 
 def transliterate(value: str) -> str:
@@ -192,6 +241,7 @@ def empty_case_payload() -> dict[str, Any]:
         "governance_level": "",
         "risk_sector": "",
         "violation_type": "",
+        "violation_description": "",
         "case_summary": "",
         "legal_qualification": "",
         "case_progress": "",
@@ -357,6 +407,7 @@ class Database:
                     governance_level TEXT,
                     risk_sector TEXT,
                     violation_type TEXT,
+                    violation_description TEXT NOT NULL DEFAULT '',
                     case_summary TEXT,
                     legal_qualification TEXT,
                     case_progress TEXT,
@@ -399,7 +450,13 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS violation_types (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
                 """
             )
@@ -415,14 +472,61 @@ class Database:
                         now_iso(),
                     ),
                 )
+            self.apply_data_migrations(conn)
             for item in VIOLATION_PRESETS:
-                conn.execute("INSERT OR IGNORE INTO violation_types(name) VALUES (?)", (item,))
+                conn.execute(
+                    "INSERT OR IGNORE INTO violation_types(name, description) VALUES (?, ?)",
+                    (item, VIOLATION_DESCRIPTIONS.get(item, "")),
+                )
+                conn.execute(
+                    "UPDATE violation_types SET description = ? WHERE name = ? AND COALESCE(description, '') = ''",
+                    (VIOLATION_DESCRIPTIONS.get(item, ""), item),
+                )
             self.seed_demo(conn)
             conn.commit()
         finally:
             conn.close()
 
-    
+
+
+    def apply_data_migrations(self, conn: sqlite3.Connection) -> None:
+        case_columns = {row["name"] for row in conn.execute("PRAGMA table_info(cases)").fetchall()}
+        if "violation_description" not in case_columns:
+            conn.execute("ALTER TABLE cases ADD COLUMN violation_description TEXT NOT NULL DEFAULT ''")
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(violation_types)").fetchall()}
+        if "description" not in columns:
+            conn.execute("ALTER TABLE violation_types ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+
+        migration_key = "clear-initial-violation-types-v1"
+        already_done = conn.execute("SELECT value FROM app_settings WHERE key = ?", (migration_key,)).fetchone()
+        if not already_done:
+            conn.execute("DELETE FROM violation_types")
+            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?)", (migration_key, now_iso()))
+
+        rows = conn.execute("SELECT id, name FROM countries ORDER BY id ASC").fetchall()
+        seen: set[str] = set()
+        for row in rows:
+            normalized = normalize_country_name(row["name"])
+            normalized_key = normalized.casefold()
+            if not normalized:
+                conn.execute("DELETE FROM countries WHERE id = ?", (row["id"],))
+                continue
+            if normalized_key in seen:
+                conn.execute("DELETE FROM countries WHERE id = ?", (row["id"],))
+                continue
+            seen.add(normalized_key)
+            if normalized != row["name"]:
+                conn.execute("UPDATE countries SET name = ? WHERE id = ?", (normalized, row["id"]))
+
+        case_country_rows = conn.execute("SELECT id, country FROM cases WHERE country IS NOT NULL AND country != ''").fetchall()
+        for row in case_country_rows:
+            normalized = normalize_country_name(row["country"])
+            if normalized != row["country"]:
+                conn.execute("UPDATE cases SET country = ? WHERE id = ?", (normalized, row["id"]))
+
+        conn.execute("UPDATE cases SET photo_path = NULL WHERE lower(full_name) LIKE lower(?)", ("%Роберт Менендес%",))
+
     def seed_demo(self, conn: sqlite3.Connection) -> None:
         seeds = load_seed_cases()
         if seeds:
@@ -438,17 +542,17 @@ class Database:
                         """
                         INSERT INTO cases (
                             slug, section, full_name, short_description, photo_path, year_or_period, amount,
-                            country, organization, jurisdiction, governance_level, risk_sector, violation_type,
+                            country, organization, jurisdiction, governance_level, risk_sector, violation_type, violation_description,
                             case_summary, legal_qualification, case_progress, consequences,
                             institutional_effects, policy_lessons, status, published_at, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """
                     ),
                     (
                         sample["slug"], sample["section"], sample["full_name"], sample["short_description"], None,
                         sample.get("year_or_period"), sample.get("amount"), sample.get("country"), sample.get("organization"),
                         sample.get("jurisdiction"), sample.get("governance_level"), sample.get("risk_sector"),
-                        sample.get("violation_type"), sample.get("case_summary"), sample.get("legal_qualification"),
+                        sample.get("violation_type"), sample.get("violation_description", ""), sample.get("case_summary"), sample.get("legal_qualification"),
                         sample.get("case_progress"), sample.get("consequences"), sample.get("institutional_effects"),
                         sample.get("policy_lessons"), sample.get("status") or "published", published_at, created_at, updated_at,
                     ),
@@ -463,8 +567,6 @@ class Database:
                     conn.execute("INSERT OR IGNORE INTO countries(name) VALUES (?)", (sample["country"],))
                 if sample.get("organization"):
                     conn.execute("INSERT OR IGNORE INTO organizations(name) VALUES (?)", (sample["organization"],))
-                if sample.get("violation_type"):
-                    conn.execute("INSERT OR IGNORE INTO violation_types(name) VALUES (?)", (sample["violation_type"],))
             return
 
         existing = conn.execute("SELECT COUNT(*) AS cnt FROM cases").fetchone()["cnt"]
@@ -543,17 +645,17 @@ class Database:
                     """
                     INSERT INTO cases (
                         slug, section, full_name, short_description, photo_path, year_or_period, amount,
-                        country, organization, jurisdiction, governance_level, risk_sector, violation_type,
+                        country, organization, jurisdiction, governance_level, risk_sector, violation_type, violation_description,
                         case_summary, legal_qualification, case_progress, consequences,
                         institutional_effects, policy_lessons, status, published_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
                 (
                     sample["slug"], sample["section"], sample["full_name"], sample["short_description"], None,
                     sample.get("year_or_period"), sample.get("amount"), sample.get("country"), sample.get("organization"),
                     sample.get("jurisdiction"), sample.get("governance_level"), sample.get("risk_sector"),
-                    sample.get("violation_type"), sample.get("case_summary"), sample.get("legal_qualification"),
+                    sample.get("violation_type"), sample.get("violation_description", ""), sample.get("case_summary"), sample.get("legal_qualification"),
                     sample.get("case_progress"), sample.get("consequences"), sample.get("institutional_effects"),
                     sample.get("policy_lessons"), sample["status"], sample.get("published_at"), created_at, updated_at,
                 ),
@@ -619,7 +721,7 @@ class CasesRepository:
                 data["slug"], data["section"], data["full_name"], data["short_description"], data.get("photo_path"),
                 data.get("year_or_period"), data.get("amount"), data.get("country"), data.get("organization"),
                 data.get("jurisdiction"), data.get("governance_level"), data.get("risk_sector"), data.get("violation_type"),
-                data.get("case_summary"), data.get("legal_qualification"), data.get("case_progress"), data.get("consequences"),
+                data.get("violation_description"), data.get("case_summary"), data.get("legal_qualification"), data.get("case_progress"), data.get("consequences"),
                 data.get("institutional_effects"), data.get("policy_lessons"), data["status"], published_at,
             )
             if case_id is None:
@@ -628,10 +730,10 @@ class CasesRepository:
                         """
                         INSERT INTO cases (
                             slug, section, full_name, short_description, photo_path, year_or_period, amount,
-                            country, organization, jurisdiction, governance_level, risk_sector, violation_type,
+                            country, organization, jurisdiction, governance_level, risk_sector, violation_type, violation_description,
                             case_summary, legal_qualification, case_progress, consequences,
                             institutional_effects, policy_lessons, status, published_at, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """
                     ),
                     payload + (created_at, updated_at),
@@ -643,7 +745,7 @@ class CasesRepository:
                         """
                         UPDATE cases SET
                             slug = ?, section = ?, full_name = ?, short_description = ?, photo_path = ?, year_or_period = ?, amount = ?,
-                            country = ?, organization = ?, jurisdiction = ?, governance_level = ?, risk_sector = ?, violation_type = ?,
+                            country = ?, organization = ?, jurisdiction = ?, governance_level = ?, risk_sector = ?, violation_type = ?, violation_description = ?,
                             case_summary = ?, legal_qualification = ?, case_progress = ?, consequences = ?,
                             institutional_effects = ?, policy_lessons = ?, status = ?, published_at = ?, updated_at = ?
                         WHERE id = ?
@@ -661,8 +763,6 @@ class CasesRepository:
                 conn.execute("INSERT OR IGNORE INTO countries(name) VALUES (?)", (data["country"],))
             if data.get("organization"):
                 conn.execute("INSERT OR IGNORE INTO organizations(name) VALUES (?)", (data["organization"],))
-            if data.get("violation_type"):
-                conn.execute("INSERT OR IGNORE INTO violation_types(name) VALUES (?)", (data["violation_type"],))
             conn.commit()
             return int(case_id)
         finally:
@@ -716,6 +816,27 @@ class CasesRepository:
             }.get(sort, "published_at DESC, updated_at DESC")
             sql = f"SELECT * FROM cases WHERE {' AND '.join(clauses)} ORDER BY {order_by}"
             return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def list_related_by_violation(case_id: int, violation_type: str, limit: int = 3) -> list[sqlite3.Row]:
+        violation_type = normalize_spaces(violation_type)
+        if not violation_type:
+            return []
+        conn = DB.connect()
+        try:
+            return conn.execute(
+                """
+                SELECT * FROM cases
+                WHERE status = 'published'
+                  AND id != ?
+                  AND violation_type = ?
+                ORDER BY published_at DESC, updated_at DESC
+                LIMIT ?
+                """,
+                (case_id, violation_type, limit),
+            ).fetchall()
         finally:
             conn.close()
 
@@ -777,19 +898,110 @@ class CasesRepository:
 
     @staticmethod
     def list_dictionary(table: str) -> list[str]:
+        if table not in {"countries", "organizations", "violation_types"}:
+            return []
+        if table == "violation_types":
+            return list(VIOLATION_PRESETS)
         conn = DB.connect()
         try:
             rows = conn.execute(f"SELECT name FROM {table} ORDER BY name COLLATE NOCASE ASC").fetchall()
-            return [row["name"] for row in rows]
+            result: list[str] = []
+            seen: set[str] = set()
+            for row in rows:
+                name = normalize_country_name(row["name"]) if table == "countries" else normalize_spaces(row["name"])
+                key = name.casefold()
+                if name and key not in seen:
+                    result.append(name)
+                    seen.add(key)
+            return result
         finally:
             conn.close()
 
     @staticmethod
-    def add_dictionary_value(table: str, name: str) -> None:
+    def list_violation_type_records() -> list[dict[str, str]]:
         conn = DB.connect()
         try:
-            conn.execute(f"INSERT OR IGNORE INTO {table}(name) VALUES (?)", (name,))
+            rows = conn.execute(
+                "SELECT name, COALESCE(description, '') AS description FROM violation_types"
+            ).fetchall()
+            description_by_name = {row["name"]: row["description"] for row in rows}
+            return [
+                {"name": name, "description": description_by_name.get(name, VIOLATION_DESCRIPTIONS.get(name, ""))}
+                for name in VIOLATION_PRESETS
+            ]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_violation_type_description(name: str) -> str:
+        name = normalize_spaces(name)
+        if not name:
+            return ""
+        conn = DB.connect()
+        try:
+            row = conn.execute("SELECT COALESCE(description, '') AS description FROM violation_types WHERE name = ?", (name,)).fetchone()
+            return row["description"] if row else ""
+        finally:
+            conn.close()
+
+    @staticmethod
+    def add_dictionary_value(table: str, name: str, description: str = "") -> None:
+        conn = DB.connect()
+        try:
+            if table == "violation_types":
+                conn.execute(
+                    "INSERT OR IGNORE INTO violation_types(name, description) VALUES (?, ?)",
+                    (name, description),
+                )
+                if description:
+                    conn.execute(
+                        "UPDATE violation_types SET description = ? WHERE name = ?",
+                        (description, name),
+                    )
+            else:
+                conn.execute(f"INSERT OR IGNORE INTO {table}(name) VALUES (?)", (name,))
             conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def update_violation_type_description(name: str, description: str) -> bool:
+        conn = DB.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE violation_types SET description = ? WHERE name = ?",
+                (description, name),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    @staticmethod
+    def count_dictionary_usage(table: str, name: str) -> int:
+        field_by_table = {
+            "countries": "country",
+            "organizations": "organization",
+            "violation_types": "violation_type",
+        }
+        field = field_by_table.get(table)
+        if not field:
+            return 0
+        conn = DB.connect()
+        try:
+            return int(conn.execute(f"SELECT COUNT(*) AS cnt FROM cases WHERE {field} = ?", (name,)).fetchone()["cnt"])
+        finally:
+            conn.close()
+
+    @staticmethod
+    def delete_dictionary_value(table: str, name: str) -> bool:
+        if table not in {"countries", "organizations", "violation_types"}:
+            return False
+        conn = DB.connect()
+        try:
+            cursor = conn.execute(f"DELETE FROM {table} WHERE name = ?", (name,))
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
 
@@ -811,7 +1023,7 @@ def parse_sources_text(sources_text: str) -> list[dict[str, str]]:
 def save_uploaded_file(file_obj, folder: Path, prefix: str) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     original_name = Path(file_obj.file_name.decode("utf-8", errors="ignore") if isinstance(file_obj.file_name, bytes) else (file_obj.file_name or "upload.bin")).name
-    ext = Path(original_name).suffix or ".bin"
+    ext = Path(original_name).suffix.lower() or ".bin"
     name = f"{prefix}-{uuid.uuid4().hex}{ext}"
     target = folder / name
     file_obj.file_object.seek(0)
@@ -819,6 +1031,36 @@ def save_uploaded_file(file_obj, folder: Path, prefix: str) -> str:
         output.write(file_obj.file_object.read())
     return name
 
+
+def save_cropped_photo(data_url: str, folder: Path, prefix: str) -> str | None:
+    if not data_url:
+        return None
+    marker = "base64,"
+    if marker not in data_url:
+        return None
+    header, encoded = data_url.split(marker, 1)
+    if not header.startswith("data:image/"):
+        return None
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not content:
+        return None
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{prefix}-{uuid.uuid4().hex}.jpg"
+    target = folder / name
+    with open(target, "wb") as output:
+        output.write(content)
+    return name
+
+
+def delete_photo_file(photo_path: str | None) -> None:
+    if not photo_path:
+        return
+    old_photo = PHOTOS_DIR / Path(photo_path).name
+    if old_photo.exists() and old_photo.is_file():
+        old_photo.unlink()
 
 
 def parse_docx_bytes(content: bytes) -> dict[str, Any]:
@@ -833,14 +1075,7 @@ def text_to_paragraphs(value: str) -> str:
     blocks = [block.strip() for block in re.split(r"\n\n+", value or "") if block.strip()]
     if not blocks:
         return '<p class="muted">Нет данных.</p>'
-    rendered: list[str] = []
-    for block in blocks:
-        lines = [line.strip("•·- ").strip() for line in block.split("\n") if line.strip()]
-        if len(lines) > 1 and all(len(line) < 220 for line in lines):
-            rendered.append("<ul>" + "".join(f"<li>{html_escape(line)}</li>" for line in lines) + "</ul>")
-        else:
-            rendered.append(f"<p>{html_escape(block)}</p>")
-    return "".join(rendered)
+    return "".join(f"<p>{html_escape(block).replace(chr(10), '<br>')}</p>" for block in blocks)
 
 
 def field_input(value: str) -> str:
@@ -858,6 +1093,19 @@ def field_input(name: str, label: str, value: str = "", input_type: str = "text"
 
 def textarea_input(name: str, label: str, value: str = "", rows: int = 5) -> str:
     return f'''<label class="form-field"><span>{html_escape(label)}</span><textarea name="{html_escape(name)}" rows="{rows}">{html_escape(value)}</textarea></label>'''
+
+
+def select_input(name: str, label: str, value: str, options: list[str], empty_label: str = "Не выбрано") -> str:
+    normalized_value = normalize_spaces(value)
+    normalized_options = [normalize_spaces(option) for option in options if normalize_spaces(option)]
+    if normalized_value and normalized_value not in normalized_options:
+        normalized_options = [normalized_value] + normalized_options
+    option_html = f'<option value="">{html_escape(empty_label)}</option>'
+    option_html += "".join(
+        f'<option value="{html_escape(option)}" {"selected" if option == normalized_value else ""}>{html_escape(option)}</option>'
+        for option in normalized_options
+    )
+    return f'''<label class="form-field"><span>{html_escape(label)}</span><select name="{html_escape(name)}">{option_html}</select></label>'''
 
 
 def render_datalists() -> str:
@@ -924,13 +1172,201 @@ def render_public_layout(title: str, body: str, current_section: str = "") -> by
         <a href=\"/cases/russia\">Россия</a>
         <a href=\"/cases/foreign\">Иностранные государства</a>
         <a href=\"/cases/intl-orgs\">Международные организации</a>
-        <a href=\"/admin/login\" class=\"footer-admin-link\">Вход для администратора</a>
       </div>
     </div>
   </footer>
+  <script>
+    document.addEventListener('keydown', function (event) {{
+      if (event.ctrlKey && event.shiftKey && event.key && event.key.toLowerCase() === 'a') {{
+        event.preventDefault();
+        window.location.href = '/admin/login';
+      }}
+    }});
+  </script>
 </body>
 </html>"""
     return html_doc.encode("utf-8")
+
+
+def render_admin_photo_cropper_script() -> str:
+    return r"""
+<script>
+(function () {
+  const input = document.getElementById('photoInput');
+  const hidden = document.getElementById('croppedPhotoData');
+  const cropper = document.getElementById('photoCropper');
+  const canvas = document.getElementById('photoCropCanvas');
+  const resetButton = document.getElementById('cropResetButton');
+  if (!input || !hidden || !cropper || !canvas) {
+    return;
+  }
+
+  const ctx = canvas.getContext('2d');
+  const image = new Image();
+  const ratio = 3 / 2;
+  let imageScale = 1;
+  let imageX = 0;
+  let imageY = 0;
+  let imageW = 0;
+  let imageH = 0;
+  let crop = null;
+  let dragMode = null;
+  let lastX = 0;
+  let lastY = 0;
+
+  function getPoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    const source = event.touches && event.touches.length ? event.touches[0] : event;
+    return {
+      x: (source.clientX - rect.left) * (canvas.width / rect.width),
+      y: (source.clientY - rect.top) * (canvas.height / rect.height)
+    };
+  }
+
+  function clampCrop() {
+    if (!crop) return;
+    const minW = Math.min(140, imageW);
+    crop.w = Math.max(minW, Math.min(crop.w, imageW));
+    crop.h = crop.w / ratio;
+    if (crop.h > imageH) {
+      crop.h = imageH;
+      crop.w = crop.h * ratio;
+    }
+    crop.x = Math.max(imageX, Math.min(crop.x, imageX + imageW - crop.w));
+    crop.y = Math.max(imageY, Math.min(crop.y, imageY + imageH - crop.h));
+  }
+
+  function resetCrop() {
+    const w = Math.min(imageW * 0.82, imageH * ratio * 0.82);
+    const h = w / ratio;
+    crop = {
+      x: imageX + (imageW - w) / 2,
+      y: imageY + (imageH - h) / 2,
+      w: w,
+      h: h
+    };
+    updateHidden();
+    draw();
+  }
+
+  function draw() {
+    if (!crop) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#f3efe7';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, imageX, imageY, imageW, imageH);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(12, 25, 39, 0.52)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(crop.x, crop.y, crop.w, crop.h);
+    ctx.drawImage(image, imageX, imageY, imageW, imageH);
+    ctx.restore();
+
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(crop.x, crop.y, crop.w, crop.h);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(crop.x + crop.w - 12, crop.y + crop.h - 12, 12, 12);
+  }
+
+  function updateHidden() {
+    if (!crop) return;
+    const sourceX = Math.max(0, (crop.x - imageX) / imageScale);
+    const sourceY = Math.max(0, (crop.y - imageY) / imageScale);
+    const sourceW = Math.min(image.naturalWidth - sourceX, crop.w / imageScale);
+    const sourceH = Math.min(image.naturalHeight - sourceY, crop.h / imageScale);
+
+    const output = document.createElement('canvas');
+    output.width = 1200;
+    output.height = 800;
+    const outputCtx = output.getContext('2d');
+    outputCtx.drawImage(image, sourceX, sourceY, sourceW, sourceH, 0, 0, output.width, output.height);
+    hidden.value = output.toDataURL('image/jpeg', 0.9);
+  }
+
+  function initImage() {
+    const scaleX = canvas.width / image.naturalWidth;
+    const scaleY = canvas.height / image.naturalHeight;
+    imageScale = Math.min(scaleX, scaleY);
+    imageW = image.naturalWidth * imageScale;
+    imageH = image.naturalHeight * imageScale;
+    imageX = (canvas.width - imageW) / 2;
+    imageY = (canvas.height - imageH) / 2;
+    cropper.hidden = false;
+    resetCrop();
+  }
+
+  function startDrag(event) {
+    if (!crop) return;
+    const point = getPoint(event);
+    lastX = point.x;
+    lastY = point.y;
+    const nearHandle = point.x >= crop.x + crop.w - 24 && point.x <= crop.x + crop.w + 8 && point.y >= crop.y + crop.h - 24 && point.y <= crop.y + crop.h + 8;
+    const inside = point.x >= crop.x && point.x <= crop.x + crop.w && point.y >= crop.y && point.y <= crop.y + crop.h;
+    dragMode = nearHandle ? 'resize' : (inside ? 'move' : null);
+  }
+
+  function moveDrag(event) {
+    if (!dragMode || !crop) return;
+    const point = getPoint(event);
+    const dx = point.x - lastX;
+    const dy = point.y - lastY;
+    if (dragMode === 'move') {
+      crop.x += dx;
+      crop.y += dy;
+    } else if (dragMode === 'resize') {
+      crop.w += dx;
+      crop.h = crop.w / ratio;
+    }
+    lastX = point.x;
+    lastY = point.y;
+    clampCrop();
+    updateHidden();
+    draw();
+  }
+
+  input.addEventListener('change', function () {
+    hidden.value = '';
+    const file = input.files && input.files[0];
+    if (!file) {
+      cropper.hidden = true;
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = function (event) {
+      image.onload = initImage;
+      image.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  canvas.addEventListener('mousedown', startDrag);
+  canvas.addEventListener('mousemove', moveDrag);
+  window.addEventListener('mouseup', function () {
+    dragMode = null;
+  });
+
+  canvas.addEventListener('touchstart', function (event) {
+    event.preventDefault();
+    startDrag(event);
+  }, { passive: false });
+
+  canvas.addEventListener('touchmove', function (event) {
+    event.preventDefault();
+    moveDrag(event);
+  }, { passive: false });
+
+  window.addEventListener('touchend', function () {
+    dragMode = null;
+  });
+
+  if (resetButton) {
+    resetButton.addEventListener('click', resetCrop);
+  }
+})();
+</script>
+"""
 
 
 def render_admin_layout(title: str, body: str, flash: str = "") -> bytes:
@@ -958,6 +1394,7 @@ def render_admin_layout(title: str, body: str, flash: str = "") -> bytes:
   <main class="admin-main">
     <div class="admin-inner">{flash_html}{body}</div>
   </main>
+  {render_admin_photo_cropper_script()}
 </body>
 </html>'''
     return html_doc.encode("utf-8")
@@ -987,7 +1424,6 @@ def render_case_card(case: sqlite3.Row) -> str:
       <a href="/case/{html_escape(case['slug'])}">
         <div class="case-media">{media}</div>
         <div class="case-card-body">
-          <div class="card-section">{html_escape(SECTION_SHORT.get(case["section"], case["section"]))}</div>
           <h3>{html_escape(case['full_name'])}</h3>
           <p>{html_escape(case['short_description'])}</p>
           <div class="chip-row">{chips_html}</div>
@@ -1015,15 +1451,17 @@ def build_public_filters(section: str, q: str, country: str, violation_type: str
         f'<option value="{key}" {"selected" if sort == key else ""}>{label}</option>' for key, label in sort_options
     )
     return f"""
-    <form method="get" class="filters-panel">
-      <div class="search-slot"><input type="search" name="q" value="{html_escape(q)}" placeholder="Поиск внутри раздела"></div>
-      <select name="country">{country_options}</select>
-      <select name="violation_type">{violation_options}</select>
-      <input type="text" name="year" value="{html_escape(year)}" placeholder="Год или период">
-      <select name="sort">{sort_html}</select>
-      <button type="submit">Найти</button>
-      <a class="ghost" href="/cases/{section}">Сбросить</a>
-    </form>
+    <div class="filters-area">
+      <form method="get" class="filters-panel">
+        <div class="search-slot"><input type="search" name="q" value="{html_escape(q)}" placeholder="Поиск внутри раздела"></div>
+        <select name="country">{country_options}</select>
+        <select name="violation_type">{violation_options}</select>
+        <input type="text" name="year" value="{html_escape(year)}" placeholder="Год или период">
+        <select name="sort">{sort_html}</select>
+        <button type="submit">Найти</button>
+        <a class="ghost" href="/cases/{section}">Сбросить</a>
+      </form>
+    </div>
     """
 
 
@@ -1036,7 +1474,17 @@ def build_case_form(case: dict[str, Any]) -> str:
         f'<option value="{key}" {"selected" if case.get("section") == key else ""}>{html_escape(label)}</option>'
         for key, label in SECTION_LABELS.items()
     )
-    photo_note = f'<div class="muted">Текущее фото: {html_escape(case.get("photo_path") or "не загружено")}</div>' if case.get("photo_path") else '<div class="muted">Фото не загружено.</div>'
+    if case.get("photo_path"):
+        photo_note = f"""
+        <div class="current-photo-box">
+          <img src="/uploads/photos/{quote(case.get("photo_path") or "")}" alt="Текущее фото">
+          <div>
+            <div class="muted">Текущее фото: {html_escape(case.get("photo_path") or "")}</div>
+            <label class="checkbox-line"><input type="checkbox" name="remove_photo" value="1"> Удалить текущее фото</label>
+          </div>
+        </div>"""
+    else:
+        photo_note = '<div class="muted">Фото не загружено.</div>'
     return f'''
       {render_datalists()}
       <div class="form-grid two">
@@ -1051,9 +1499,26 @@ def build_case_form(case: dict[str, Any]) -> str:
         {field_input("jurisdiction", "Юрисдикция", case.get("jurisdiction", ""))}
         {field_input("governance_level", "Уровень управления", case.get("governance_level", ""))}
         {field_input("risk_sector", "Отрасль риска", case.get("risk_sector", ""))}
-        {field_input("violation_type", "Тип нарушения", case.get("violation_type", ""), datalist="violation-list")}
+        {select_input("violation_type", "Тип нарушения", case.get("violation_type", ""), CasesRepository.list_dictionary("violation_types"), empty_label="Выберите тип нарушения")}
       </div>
-      <label class="form-field"><span>Фото</span><input type="file" name="photo" accept="image/*">{photo_note}</label>
+      {textarea_input("violation_description", "Тип коррупционного поведения", case.get("violation_description", ""), rows=4)}
+      <div class="muted text-help">Это описание относится только к текущему кейсу. Сам фильтр выбирается из фиксированного списка выше.</div>
+      <div class="form-field photo-upload-field">
+        <span>Фото</span>
+        <input id="photoInput" type="file" name="photo" accept="image/jpeg,image/png,image/webp">
+        <input id="croppedPhotoData" type="hidden" name="cropped_photo_data" value="">
+        <div class="muted photo-help">Рекомендуется горизонтальное фото JPG, PNG или WebP. Перед сохранением можно выбрать кадр 3:2, итоговое изображение сохраняется примерно 1200×800 px.</div>
+        {photo_note}
+        <div id="photoCropper" class="photo-cropper" hidden>
+          <div class="cropper-title">Кадрирование фото</div>
+          <canvas id="photoCropCanvas" width="720" height="480"></canvas>
+          <div class="cropper-actions">
+            <button type="button" class="ghost" id="cropResetButton">Сбросить кадр</button>
+            <span class="muted">Перетащите рамку или потяните угол рамки для изменения кадра.</span>
+          </div>
+        </div>
+      </div>
+      <div class="muted text-help">Чтобы текст не превращался в один сплошной блок, разделяйте абзацы пустой строкой. Переносы внутри абзаца сохраняются.</div>
       {textarea_input("case_summary", "Фабула дела", case.get("case_summary", ""), rows=6)}
       {textarea_input("legal_qualification", "Правовая квалификация", case.get("legal_qualification", ""), rows=5)}
       {textarea_input("case_progress", "Ход дела", case.get("case_progress", ""), rows=5)}
@@ -1081,7 +1546,13 @@ def generate_case_pdf(case: sqlite3.Row, sources: list[sqlite3.Row]) -> bytes:
 
     def write_block(title: str, text: str) -> None:
         nonlocal y
-        lines = simpleSplit(text or "Нет данных.", font_name, 10, width - 2 * margin_x)
+        lines: list[str] = []
+        for paragraph in (text or "Нет данных.").splitlines():
+            paragraph = paragraph.strip()
+            if not paragraph:
+                lines.append("")
+                continue
+            lines.extend(simpleSplit(paragraph, font_name, 10, width - 2 * margin_x))
         needed = 20 + 14 * (len(lines) + 1)
         if y - needed < 50:
             pdf.showPage()
@@ -1101,9 +1572,7 @@ def generate_case_pdf(case: sqlite3.Row, sources: list[sqlite3.Row]) -> bytes:
     pdf.drawString(margin_x, y, case["full_name"])
     y -= 24
     basics = [
-        f"Раздел: {SECTION_SHORT.get(case['section'], case['section'])}",
         f"Год / период: {case['year_or_period'] or '—'}",
-        f"Сумма: {case['amount'] or '—'}",
         f"Страна: {case['country'] or '—'}",
         f"Организация: {case['organization'] or '—'}",
         f"Юрисдикция: {case['jurisdiction'] or '—'}",
@@ -1112,6 +1581,8 @@ def generate_case_pdf(case: sqlite3.Row, sources: list[sqlite3.Row]) -> bytes:
         f"Тип нарушения: {case['violation_type'] or '—'}",
     ]
     write_block("Базовые данные", "\n".join(basics))
+    if "violation_description" in case.keys() and case["violation_description"]:
+        write_block("Тип коррупционного поведения", case["violation_description"])
     write_block("Краткое описание", case["short_description"])
     write_block("Фабула дела", case["case_summary"])
     write_block("Правовая квалификация", case["legal_qualification"])
@@ -1305,22 +1776,17 @@ class AppHandler(BaseHTTPRequestHandler):
 
 
     def handle_home(self) -> None:
-        stats = CasesRepository.stats()
-        latest = CasesRepository.list_public(sort="new")[:6]
-        highlights = "".join(render_case_card(case) for case in latest)
         section_cards = "".join(
             f"""
             <a class="feature-section section-{slug}" href="/cases/{slug}">
               <div>
                 <span>{html_escape(SECTION_SHORT.get(slug, slug))}</span>
                 <strong>{html_escape(label)}</strong>
-                <p>{stats[slug.replace('-', '_')]} материалов в библиотеке</p>
               </div>
             </a>
             """
             for slug, label in SECTION_LABELS.items()
         )
-        about = CasesRepository.get_about()
         audience_cards = """
         <div class="audience-grid">
           <article class="info-card">
@@ -1338,20 +1804,11 @@ class AppHandler(BaseHTTPRequestHandler):
         </div>
         """
         body = f"""
-        <section class="hero-panel">
+        <section class="hero-panel hero-panel-simple">
           <div class="hero-copy">
             <div class="eyebrow">Открытая библиотека коррупционных кейсов</div>
             <h1>Российская, зарубежная и международная сравнительная практика</h1>
             <p class="lead">Цифровой ресурс для изучения коррупционных кейсов в единой структуре: базовые данные, фабула, квалификация, ход дела, последствия и институциональные выводы.</p>
-            <div class="hero-actions">
-              <a class="primary-link" href="/cases/russia">Перейти к кейсам</a>
-              <a class="ghost" href="/about">О проекте</a>
-            </div>
-          </div>
-          <div class="hero-side stat-rail">
-            <article class="glass-card"><span>Всего кейсов</span><strong>{stats["all"]}</strong></article>
-            <article class="glass-card"><span>Опубликовано</span><strong>{stats["published"]}</strong></article>
-            <article class="glass-card"><span>Международные организации</span><strong>{stats["intl_orgs"]}</strong></article>
           </div>
         </section>
 
@@ -1370,19 +1827,6 @@ class AppHandler(BaseHTTPRequestHandler):
         <section class="section-block">
           <div class="section-head"><h2>Для кого полезен ресурс</h2><p class="muted">Сайт собран как витрина знаний, а не как архив файлов.</p></div>
           {audience_cards}
-        </section>
-
-        <section class="section-block about-surface">
-          <div class="section-head"><h2>О проекте</h2><a href="/about">Открыть страницу</a></div>
-          <div class="info-surface">
-            <p>{html_escape(about['goal'])}</p>
-            <p>{html_escape(about['methodology'])}</p>
-          </div>
-        </section>
-
-        <section class="section-block">
-          <div class="section-head"><h2>Последние опубликованные кейсы</h2><a href="/cases/russia">Смотреть каталог</a></div>
-          <div class="cards-grid">{highlights}</div>
         </section>
         """
         self.respond_html(render_public_layout("Главная", body))
@@ -1417,7 +1861,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if case is None:
             return self.respond_text("Кейс не найден", status=404)
         sources = CasesRepository.get_sources(case["id"])
-        related = [item for item in CasesRepository.list_public(section=case["section"], sort="new") if item["id"] != case["id"]][:3]
+        related = CasesRepository.list_related_by_violation(case["id"], case["violation_type"], limit=3)
         related_html = "".join(
             f'<a class="related-item" href="/case/{html_escape(item["slug"])}"><strong>{html_escape(item["full_name"])}</strong><span>{html_escape(item["short_description"])}</span></a>'
             for item in related
@@ -1429,11 +1873,9 @@ class AppHandler(BaseHTTPRequestHandler):
         ) or '<li>Источники не добавлены.</li>'
 
         basic_fields = [
-            ("Раздел", SECTION_SHORT.get(case["section"], case["section"])),
             ("Страна", case["country"]),
             ("Организация", case["organization"]),
             ("Год / период", case["year_or_period"]),
-            ("Сумма", case["amount"]),
             ("Юрисдикция", case["jurisdiction"]),
             ("Уровень управления", case["governance_level"]),
             ("Отрасль риска", case["risk_sector"]),
@@ -1469,6 +1911,7 @@ class AppHandler(BaseHTTPRequestHandler):
             </nav>
 
             <section id="basic" class="case-section"><h2>Базовые данные</h2><div class="basic-grid">{basics_html}</div></section>
+            {f'<section class="case-section violation-case-description"><h2>Тип коррупционного поведения</h2>{text_to_paragraphs(case["violation_description"])}</section>' if "violation_description" in case.keys() and case["violation_description"] else ""}
             <section id="summary" class="case-section"><h2>Фабула дела</h2>{text_to_paragraphs(case['case_summary'])}</section>
             <section id="qualification" class="case-section"><h2>Правовая квалификация</h2>{text_to_paragraphs(case['legal_qualification'])}</section>
             <section id="progress" class="case-section"><h2>Ход дела</h2>{text_to_paragraphs(case['case_progress'])}</section>
@@ -1482,7 +1925,6 @@ class AppHandler(BaseHTTPRequestHandler):
             <div class="sidebar-card">
               <h3>Паспорт кейса</h3>
               <div class="sidebar-meta">
-                <div><span>Раздел</span><strong>{html_escape(SECTION_SHORT.get(case['section'], case['section']))}</strong></div>
                 <div><span>Год</span><strong>{html_escape(case['year_or_period'] or '—')}</strong></div>
                 <div><span>Юрисдикция</span><strong>{html_escape(case['jurisdiction'] or '—')}</strong></div>
               </div>
@@ -1521,10 +1963,10 @@ class AppHandler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="about-grid">
-          <article class="info-card"><h2>Цель проекта</h2>{text_to_paragraphs(about['goal'])}</article>
-          <article class="info-card"><h2>Методология</h2>{text_to_paragraphs(about['methodology'])}</article>
-          <article class="info-card"><h2>Контакты</h2>{text_to_paragraphs(about['contacts'])}</article>
-          <article class="info-card"><h2>Учебно-просветительский характер</h2>{text_to_paragraphs(about['education_note'])}</article>
+          <article class="info-card"><h2>{ABOUT_PAGE_LABELS['goal']}</h2>{text_to_paragraphs(about['goal'])}</article>
+          <article class="info-card"><h2>{ABOUT_PAGE_LABELS['methodology']}</h2>{text_to_paragraphs(about['methodology'])}</article>
+          <article class="info-card"><h2>{ABOUT_PAGE_LABELS['contacts']}</h2>{text_to_paragraphs(about['contacts'])}</article>
+          <article class="info-card"><h2>{ABOUT_PAGE_LABELS['education_note']}</h2>{text_to_paragraphs(about['education_note'])}</article>
         </section>
         """
         self.respond_html(render_public_layout("О проекте", body, current_section="about"))
@@ -1565,7 +2007,7 @@ class AppHandler(BaseHTTPRequestHandler):
             <label class="form-field"><span>Пароль</span><input type="password" name="password" required></label>
             <button type="submit">Войти</button>
           </form>
-          <p class="muted">По умолчанию: admin / admin123</p>
+          <p class="muted">По умолчанию: admin / 123</p>
         </div>
         '''
         self.respond_html(render_public_layout("Вход", body))
@@ -1666,6 +2108,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 "governance_level": "",
                 "risk_sector": "",
                 "violation_type": "",
+                "violation_description": "",
                 "case_summary": "",
                 "legal_qualification": "",
                 "case_progress": "",
@@ -1713,8 +2156,21 @@ class AppHandler(BaseHTTPRequestHandler):
             return self.handle_admin_case_form(case_id, flash="ФИО и краткое описание обязательны.")
         existing = CasesRepository.get_case_by_id(case_id) if case_id else None
         photo_path = existing["photo_path"] if existing else None
-        if "photo" in files and getattr(files["photo"], "size", 0):
-            photo_path = save_uploaded_file(files["photo"], PHOTOS_DIR, "photo")
+        remove_photo = fields.get("remove_photo") == "1"
+        uploaded_photo = files.get("photo")
+        cropped_photo_data = fields.get("cropped_photo_data", "")
+        has_uploaded_photo = uploaded_photo is not None and getattr(uploaded_photo, "size", 0) > 0
+
+        if remove_photo or has_uploaded_photo:
+            delete_photo_file(photo_path)
+            photo_path = None
+
+        if has_uploaded_photo:
+            cropped_photo_path = save_cropped_photo(cropped_photo_data, PHOTOS_DIR, "photo")
+            if cropped_photo_path:
+                photo_path = cropped_photo_path
+            else:
+                photo_path = save_uploaded_file(uploaded_photo, PHOTOS_DIR, "photo")
         data = {
             "slug": slugify(slug),
             "section": fields.get("section", "russia"),
@@ -1728,7 +2184,8 @@ class AppHandler(BaseHTTPRequestHandler):
             "jurisdiction": fields.get("jurisdiction", "").strip(),
             "governance_level": fields.get("governance_level", "").strip(),
             "risk_sector": fields.get("risk_sector", "").strip(),
-            "violation_type": fields.get("violation_type", "").strip(),
+            "violation_type": fields.get("violation_type", "").strip() if fields.get("violation_type", "").strip() in VIOLATION_PRESETS else "",
+            "violation_description": fields.get("violation_description", "").strip(),
             "case_summary": fields.get("case_summary", "").strip(),
             "legal_qualification": fields.get("legal_qualification", "").strip(),
             "case_progress": fields.get("case_progress", "").strip(),
@@ -1788,10 +2245,10 @@ class AppHandler(BaseHTTPRequestHandler):
         body = f'''
         <section class="page-head"><h1>Редактирование страницы «О проекте»</h1><p class="muted">Текст обновляется без участия программиста.</p></section>
         <form method="post" class="stack card-form">
-          {textarea_input("goal", "Цель проекта", about['goal'], rows=5)}
-          {textarea_input("methodology", "Методология", about['methodology'], rows=6)}
-          {textarea_input("contacts", "Контакты", about['contacts'], rows=4)}
-          {textarea_input("education_note", "Учебно-просветительский характер", about['education_note'], rows=4)}
+          {textarea_input("goal", ABOUT_PAGE_LABELS['goal'], about['goal'], rows=5)}
+          {textarea_input("methodology", ABOUT_PAGE_LABELS['methodology'], about['methodology'], rows=6)}
+          {textarea_input("contacts", ABOUT_PAGE_LABELS['contacts'], about['contacts'], rows=4)}
+          {textarea_input("education_note", ABOUT_PAGE_LABELS['education_note'], about['education_note'], rows=4)}
           <div class="form-actions"><button type="submit">Сохранить</button></div>
         </form>
         '''
@@ -1814,41 +2271,104 @@ class AppHandler(BaseHTTPRequestHandler):
             return
         countries = CasesRepository.list_dictionary("countries")
         organizations = CasesRepository.list_dictionary("organizations")
-        violations = CasesRepository.list_dictionary("violation_types")
-        def block(title: str, key: str, values: list[str]) -> str:
-            items = "".join(f"<li>{html_escape(value)}</li>" for value in values) or "<li>Пока пусто.</li>"
-            return f'''
+        violations = CasesRepository.list_violation_type_records()
+
+        def delete_form(key: str, value: str) -> str:
+            return f"""
+            <form method="post" class="dictionary-delete-form">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="dictionary" value="{html_escape(key)}">
+              <input type="hidden" name="value" value="{html_escape(value)}">
+              <button type="submit" class="ghost danger small-button">Удалить</button>
+            </form>
+            """
+
+        def simple_block(title: str, key: str, values: list[str]) -> str:
+            items = "".join(
+                f"""
+                <li class="dictionary-item">
+                  <span>{html_escape(value)}</span>
+                  {delete_form(key, value)}
+                </li>
+                """
+                for value in values
+            ) or '<li class="muted">Пока пусто.</li>'
+            return f"""
             <section class="dictionary-block">
               <h2>{html_escape(title)}</h2>
               <form method="post" class="inline-form">
+                <input type="hidden" name="action" value="add">
                 <input type="hidden" name="dictionary" value="{html_escape(key)}">
                 <input type="text" name="value" placeholder="Новое значение" required>
                 <button type="submit">Добавить</button>
               </form>
               <ul class="dictionary-list">{items}</ul>
             </section>
-            '''
-        body = f'''
-        <section class="page-head"><h1>Справочники</h1><p class="muted">Минимальная реализация для стран, организаций и типов нарушений.</p></section>
+            """
+
+        violation_items = "".join(
+            f"""
+            <li class="dictionary-item violation-dictionary-item">
+              <div class="dictionary-item-head">
+                <strong>{html_escape(row['name'])}</strong>
+                <span class="locked-dictionary-note">фиксированный фильтр</span>
+              </div>
+            </li>
+            """
+            for row in violations
+        ) or '<li class="muted">Пока пусто.</li>'
+
+        violation_block = f"""
+        <section class="dictionary-block violation-dictionary-block">
+          <h2>Типы нарушений</h2>
+          <p class="muted dictionary-note">Список типов нарушений зафиксирован в коде и используется как набор фильтров. В кейсе можно выбрать тип из этого списка и отдельно заполнить подробное описание для конкретного кейса.</p>
+          <ul class="dictionary-list violation-dictionary-list">{violation_items}</ul>
+        </section>
+        """
+
+        body = f"""
+        <section class="page-head"><h1>Справочники</h1><p class="muted">Страны и организации можно добавлять и удалять. Типы нарушений уже добавлены как фиксированные фильтры.</p></section>
         <div class="dictionary-grid">
-          {block('Страны', 'countries', countries)}
-          {block('Организации', 'organizations', organizations)}
-          {block('Типы нарушений', 'violation_types', violations)}
+          {simple_block('Страны', 'countries', countries)}
+          {simple_block('Организации', 'organizations', organizations)}
+          {violation_block}
         </div>
-        '''
+        """
         self.respond_html(render_admin_layout("Справочники", body, flash=flash))
 
     def handle_admin_dictionary_add(self) -> None:
         if not self.require_admin():
             return
         fields, _ = self.parse_form_data()
+        action = fields.get("action", "add")
         dictionary = fields.get("dictionary", "")
         value = fields.get("value", "").strip()
         if dictionary not in {"countries", "organizations", "violation_types"}:
             return self.handle_admin_dictionaries_page(flash="Неизвестный справочник.")
         if not value:
             return self.handle_admin_dictionaries_page(flash="Нужно указать значение.")
-        CasesRepository.add_dictionary_value(dictionary, value)
+
+        if dictionary == "violation_types" and action not in {"update_violation_description"}:
+            return self.handle_admin_dictionaries_page(flash="Типы нарушений являются фиксированными фильтрами. Подробное описание заполняется в форме конкретного кейса.")
+
+        if action == "delete":
+            used_count = CasesRepository.count_dictionary_usage(dictionary, value)
+            if used_count > 0:
+                return self.handle_admin_dictionaries_page(
+                    flash=f"Значение не удалено: оно используется в кейсах, количество: {used_count}."
+                )
+            if CasesRepository.delete_dictionary_value(dictionary, value):
+                return self.handle_admin_dictionaries_page(flash="Значение удалено.")
+            return self.handle_admin_dictionaries_page(flash="Значение не найдено или не может быть удалено.")
+
+        if action == "update_violation_description":
+            description = fields.get("description", "").strip()
+            if CasesRepository.update_violation_type_description(value, description):
+                return self.handle_admin_dictionaries_page(flash="Описание типа нарушения обновлено.")
+            return self.handle_admin_dictionaries_page(flash="Тип нарушения не найден.")
+
+        description = fields.get("description", "").strip()
+        CasesRepository.add_dictionary_value(dictionary, value, description=description)
         self.handle_admin_dictionaries_page(flash="Значение добавлено.")
 
 
