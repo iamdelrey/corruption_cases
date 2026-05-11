@@ -63,6 +63,11 @@ SECTION_SHORT = {
     "foreign": "Иностранные государства",
     "intl-orgs": "Международные организации",
 }
+SECTION_DESCRIPTIONS = {
+    "russia": "Кейсы из российской правоприменительной практики, представленные в единой аналитической структуре.",
+    "foreign": "Материалы по коррупционным делам зарубежных юрисдикций в формате сопоставимого сравнительного анализа.",
+    "intl-orgs": "Кейсы, связанные с коррупционными нарушениями и институциональной практикой международных организаций.",
+}
 HEADER_NAV_LABELS = {
     "about": "О проекте",
     "russia": "Россия",
@@ -2208,9 +2213,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
         return AdminEntryRepository.is_valid_entry_key(entry_key)
 
-    def require_admin_entry(
-        self, query: dict[str, list[str]] | None = None
-    ) -> bool:
+    def require_admin_entry(self, query: dict[str, list[str]] | None = None) -> bool:
         if self.has_admin_entry_access():
             return True
 
@@ -2339,7 +2342,7 @@ class AppHandler(BaseHTTPRequestHandler):
             <section class="access-card">
               <div class="eyebrow">Закрытый доступ</div>
               <h1>Введите ключ доступа</h1>
-              <p class="lead">Для просмотра библиотеки необходим индивидуальный ключ использования.</p>
+              <p class="lead">Для просмотра библиотеки необходим ключ использования.</p>
               {flash_html}
               <form method="post" class="stack">
                 <input type="hidden" name="next" value="{html_escape(next_url)}">
@@ -2457,7 +2460,7 @@ class AppHandler(BaseHTTPRequestHandler):
             <div>
               <div class="eyebrow">{html_escape(SECTION_SHORT.get(section, section))}</div>
               <h1>{html_escape(SECTION_LABELS[section])}</h1>
-              <p class="lead">Поиск внутри раздела, фильтры по стране, типу нарушения и году, сортировка по ключевым сценариям MVP.</p>
+              <p class="lead">{html_escape(SECTION_DESCRIPTIONS[section])}</p>
             </div>
           </section>
           {build_public_filters(section, q, country, violation_type, year, sort)}

@@ -307,6 +307,11 @@ button:hover {
 	background: var(--primary-dark);
 }
 
+button.ghost:hover {
+	border-color: var(--primary-dark);
+	color: #fff;
+}
+
 .ghost.compact {
 	padding: 11px 14px;
 }
@@ -1032,6 +1037,10 @@ button:hover {
 .table-wrap table {
 	width: 100%;
 	border-collapse: collapse;
+}
+
+.admin-head + .table-wrap {
+	margin-top: 18px;
 }
 
 .table-wrap th,
