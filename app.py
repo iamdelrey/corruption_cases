@@ -623,11 +623,6 @@ class Database:
                     "UPDATE cases SET country = ? WHERE id = ?", (normalized, row["id"])
                 )
 
-        conn.execute(
-            "UPDATE cases SET photo_path = NULL WHERE lower(full_name) LIKE lower(?)",
-            ("%Роберт Менендес%",),
-        )
-
     def seed_demo(self, conn: sqlite3.Connection) -> None:
         seeds = load_seed_cases()
         if seeds:
