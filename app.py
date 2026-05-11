@@ -623,6 +623,28 @@ class Database:
                     "UPDATE cases SET country = ? WHERE id = ?", (normalized, row["id"])
                 )
 
+        migration_key = "restore-robert-menendes-photo-v1"
+        already_done = conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (migration_key,)
+        ).fetchone()
+        if not already_done:
+            conn.execute(
+                """
+                UPDATE cases
+                SET photo_path = ?
+                WHERE slug = ?
+                  AND (photo_path IS NULL OR photo_path = '')
+                """,
+                (
+                    "photo-802985bbacbe4896bcb8e40b591eb103.jpg",
+                    "robert-menendes",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO app_settings(key, value) VALUES (?, ?)",
+                (migration_key, now_iso()),
+            )
+
     def seed_demo(self, conn: sqlite3.Connection) -> None:
         seeds = load_seed_cases()
         if seeds:
@@ -653,7 +675,7 @@ class Database:
                         sample["section"],
                         sample["full_name"],
                         sample["short_description"],
-                        None,
+                        sample.get("photo_path"),
                         sample.get("year_or_period"),
                         sample.get("amount"),
                         sample.get("country"),
