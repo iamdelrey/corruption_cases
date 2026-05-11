@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
 from docx import Document
+from dotenv import load_dotenv
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfbase import pdfmetrics
@@ -29,6 +30,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
 DB_PATH = BASE_DIR / "data.sqlite3"
 STATIC_DIR = BASE_DIR / "static"
 UPLOADS_DIR = BASE_DIR / "uploads"
@@ -39,9 +42,14 @@ FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 HOST = os.environ.get("CASES_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CASES_PORT", "8080"))
 ADMIN_LOGIN = os.environ.get("ADMIN_LOGIN", "admin")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "123")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+
+if not ADMIN_PASSWORD:
+    raise RuntimeError("ADMIN_PASSWORD environment variable is required")
+
 SESSION_COOKIE = "corruption_cases_session"
 ACCESS_COOKIE = "corruption_cases_access"
+ADMIN_ENTRY_COOKIE = "corruption_cases_admin_entry"
 ACCESS_KEYS_COUNT = 10
 SESSIONS: dict[str, dict[str, Any]] = {}
 
@@ -536,6 +544,7 @@ class Database:
                     ),
                 )
             self.apply_data_migrations(conn)
+            AdminEntryRepository.ensure_entry_key(conn)
             AccessKeysRepository.ensure_initial_keys(conn)
 
             for item in VIOLATION_PRESETS:
@@ -820,6 +829,61 @@ class Database:
 
 
 DB = Database(DB_PATH)
+
+
+class AdminEntryRepository:
+    SETTING_KEY = "admin_entry_key"
+
+    @staticmethod
+    def generate_key() -> str:
+        return secrets.token_urlsafe(32)
+
+    @staticmethod
+    def ensure_entry_key(conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?",
+            (AdminEntryRepository.SETTING_KEY,),
+        ).fetchone()
+
+        if row and row["value"]:
+            return
+
+        entry_key = AdminEntryRepository.generate_key()
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings(key, value) VALUES (?, ?)",
+            (AdminEntryRepository.SETTING_KEY, entry_key),
+        )
+
+    @staticmethod
+    def get_entry_key() -> str:
+        conn = DB.connect()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (AdminEntryRepository.SETTING_KEY,),
+            ).fetchone()
+
+            if row and row["value"]:
+                return str(row["value"])
+
+            entry_key = AdminEntryRepository.generate_key()
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings(key, value) VALUES (?, ?)",
+                (AdminEntryRepository.SETTING_KEY, entry_key),
+            )
+            conn.commit()
+            return entry_key
+        finally:
+            conn.close()
+
+    @staticmethod
+    def is_valid_entry_key(entry_key: str) -> bool:
+        entry_key = normalize_spaces(entry_key)
+        if not entry_key:
+            return False
+
+        stored_key = AdminEntryRepository.get_entry_key()
+        return secrets.compare_digest(entry_key, stored_key)
 
 
 class AccessKeysRepository:
@@ -1980,7 +2044,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.handle_static(path)
 
             if path == "/admin/login":
-                return self.handle_admin_login_page()
+                return self.handle_admin_login_page(query)
             if path == "/admin":
                 return self.handle_admin_dashboard()
             if path == "/admin/cases":
@@ -2121,6 +2185,51 @@ class AppHandler(BaseHTTPRequestHandler):
 
         return normalize_spaces(morsel.value).upper()
 
+    def get_admin_entry_key_from_cookie(self) -> str | None:
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+
+        cookie = SimpleCookie()
+        cookie.load(raw)
+        morsel = cookie.get(ADMIN_ENTRY_COOKIE)
+        if not morsel:
+            return None
+
+        return normalize_spaces(morsel.value)
+
+    def has_admin_entry_access(self) -> bool:
+        if self.get_session_token():
+            return True
+
+        entry_key = self.get_admin_entry_key_from_cookie()
+        if not entry_key:
+            return False
+
+        return AdminEntryRepository.is_valid_entry_key(entry_key)
+
+    def require_admin_entry(
+        self, query: dict[str, list[str]] | None = None
+    ) -> bool:
+        if self.has_admin_entry_access():
+            return True
+
+        query = query or {}
+        entry_key = normalize_spaces(query.get("entry", [""])[0])
+
+        if entry_key and AdminEntryRepository.is_valid_entry_key(entry_key):
+            headers = {
+                "Set-Cookie": f"{ADMIN_ENTRY_COOKIE}={entry_key}; HttpOnly; Path=/; SameSite=Lax"
+            }
+            self.redirect("/admin/login", headers=headers)
+            return False
+
+        return self.respond_not_found()
+
+    def respond_not_found(self) -> bool:
+        self.respond_text("Не найдено", status=404)
+        return False
+
     def has_public_access(self) -> bool:
         if self.get_session_token():
             return True
@@ -2143,8 +2252,8 @@ class AppHandler(BaseHTTPRequestHandler):
         token = self.get_session_token()
         if token:
             return True
-        self.redirect("/admin/login")
-        return False
+
+        return self.respond_not_found()
 
     def respond_html(
         self, payload: bytes, status: int = 200, headers: dict[str, str] | None = None
@@ -2536,22 +2645,36 @@ class AppHandler(BaseHTTPRequestHandler):
         """
         self.respond_html(render_public_layout("Поиск", body))
 
-    def handle_admin_login_page(self) -> None:
-        body = """
+    def handle_admin_login_page(
+        self, query: dict[str, list[str]] | None = None, flash: str = ""
+    ) -> None:
+        if not self.require_admin_entry(query):
+            return
+
+        if self.get_session_token():
+            return self.redirect("/admin")
+
+        flash_html = f'<div class="flash">{html_escape(flash)}</div>' if flash else ""
+
+        body = f"""
         <div class="login-card">
-          <h1>Вход администратора</h1>
-          <form method="post" class="stack">
+        <h1>Вход администратора</h1>
+        {flash_html}
+        <form method="post" class="stack">
             <label class="form-field"><span>Логин</span><input type="text" name="login" required></label>
             <label class="form-field"><span>Пароль</span><input type="password" name="password" required></label>
             <button type="submit">Войти</button>
-          </form>
-          <p class="muted">По умолчанию: admin / 123</p>
+        </form>
         </div>
         """
         self.respond_html(render_public_layout("Вход", body))
 
     def handle_admin_login(self) -> None:
+        if not self.has_admin_entry_access():
+            return self.respond_not_found()
+
         fields, _ = self.parse_form_data()
+
         if (
             fields.get("login") == ADMIN_LOGIN
             and fields.get("password") == ADMIN_PASSWORD
@@ -2561,12 +2684,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 "Set-Cookie": f"{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax"
             }
             return self.redirect("/admin", headers=headers)
-        self.respond_html(
-            render_public_layout(
-                "Вход",
-                '<div class="login-card"><h1>Вход администратора</h1><div class="flash">Неверный логин или пароль.</div><a class="ghost" href="/admin/login">Попробовать снова</a></div>',
-            ),
-            status=401,
+
+        self.handle_admin_login_page(
+            flash="Неверный логин или пароль.",
         )
 
     def handle_admin_logout(self) -> None:
@@ -3026,8 +3146,10 @@ def main() -> None:
     ensure_dirs()
     create_style()
     DB.init()
+    admin_entry_key = AdminEntryRepository.get_entry_key()
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
     print(f"Server started on http://{HOST}:{PORT}")
+    print(f"Admin entry URL: http://{HOST}:{PORT}/admin/login?entry={admin_entry_key}")
     server.serve_forever()
 
 
