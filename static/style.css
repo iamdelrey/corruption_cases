@@ -307,6 +307,12 @@ button:hover {
 	background: var(--primary-dark);
 }
 
+.ghost.danger {
+	background: rgba(123, 31, 54, 0.08);
+	border-color: rgba(123, 31, 54, 0.22);
+	color: var(--primary-dark);
+}
+
 button.ghost:hover {
 	border-color: var(--primary-dark);
 	color: #fff;
@@ -1041,6 +1047,81 @@ button.ghost:hover {
 
 .admin-head + .table-wrap {
 	margin-top: 18px;
+}
+
+.admin-cases-head {
+	display: flex;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: 18px;
+	margin-bottom: 18px;
+}
+
+.admin-cases-filter {
+	display: grid;
+	grid-template-columns: minmax(260px, 1fr) minmax(220px, 320px) auto;
+	gap: 12px;
+	align-items: center;
+	margin-bottom: 18px;
+}
+
+.bulk-actions {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+	padding-bottom: 18px;
+	margin-bottom: 18px;
+	border-bottom: 1px solid var(--line);
+}
+
+.bulk-actions select {
+	width: min(280px, 100%);
+}
+
+.bulk-select-all {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font-weight: 600;
+}
+
+.select-cell {
+	width: 44px;
+	text-align: center;
+}
+
+.select-cell input {
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border-radius: 6px;
+	accent-color: var(--primary);
+}
+
+.case-title-cell a {
+	font-weight: 600;
+	color: var(--ink);
+}
+
+.admin-cases-table .ghost.compact {
+	border-radius: 12px;
+	padding: 9px 12px;
+}
+
+@media (max-width: 800px) {
+	.admin-cases-head {
+		align-items: flex-start;
+	}
+
+	.admin-cases-filter {
+		grid-template-columns: 1fr;
+	}
+
+	.bulk-actions select,
+	.bulk-actions button {
+		width: 100%;
+	}
 }
 
 .table-wrap th,

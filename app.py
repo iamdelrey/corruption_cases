@@ -40,7 +40,7 @@ IMPORTS_DIR = UPLOADS_DIR / "imports"
 SEED_JSON_PATH = BASE_DIR / "seed_cases.json"
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 HOST = os.environ.get("CASES_HOST", "127.0.0.1")
-PORT = int(os.environ.get("CASES_PORT", "8080"))
+PORT = int(os.environ.get("CASES_PORT") or os.environ.get("PORT", "8080"))
 ADMIN_LOGIN = os.environ.get("ADMIN_LOGIN", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 
@@ -1121,6 +1121,54 @@ class CasesRepository:
             conn.close()
 
     @staticmethod
+    def change_status_many(case_ids: list[int], status: str) -> int:
+        if not case_ids:
+            return 0
+
+        conn = DB.connect()
+        try:
+            published_at = None
+            if status == "published":
+                published_at = now_iso()
+            updated_at = now_iso()
+            placeholders = ",".join("?" for _ in case_ids)
+            cursor = conn.execute(
+                f"""
+                UPDATE cases
+                SET status = ?,
+                    published_at = COALESCE(?, published_at),
+                    updated_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                [status, published_at, updated_at, *case_ids],
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def delete_many(case_ids: list[int]) -> tuple[list[str], int]:
+        if not case_ids:
+            return [], 0
+
+        conn = DB.connect()
+        try:
+            placeholders = ",".join("?" for _ in case_ids)
+            rows = conn.execute(
+                f"SELECT photo_path FROM cases WHERE id IN ({placeholders})",
+                case_ids,
+            ).fetchall()
+            photo_paths = [str(row["photo_path"]) for row in rows if row["photo_path"]]
+            cursor = conn.execute(
+                f"DELETE FROM cases WHERE id IN ({placeholders})", case_ids
+            )
+            conn.commit()
+            return photo_paths, int(cursor.rowcount or 0)
+        finally:
+            conn.close()
+
+    @staticmethod
     def list_public(
         section: str | None = None,
         q: str = "",
@@ -1581,7 +1629,7 @@ def render_public_layout(title: str, body: str, current_section: str = "") -> by
     <div class=\"container footer-grid\">
       <div>
         <strong>Библиотека коррупционных кейсов</strong>
-        <p>Цифровой ресурс, объединяющий коррупционные кейсы России, зарубежных государств и международных организаций в единой системе сравнительного изучения.</p>
+        <p>Цифровой ресурс, объединяющий коррупционные кейсы России, зарубежных государств и международных организаций в единой системе сравнительного изучения</p>
       </div>
       <div class=\"footer-links\">
         <a href=\"/about\">О проекте</a>
@@ -1799,6 +1847,7 @@ def render_admin_layout(title: str, body: str, flash: str = "") -> bytes:
   <aside class="admin-sidebar">
     <div class="admin-brand">Админ-панель</div>
     <nav>
+      <a href="/">Главная сайта</a>
       <a href="/admin">Статистика</a>
       <a href="/admin/cases">Кейсы</a>
       <a href="/admin/import">Импорт из Word</a>
@@ -2104,6 +2153,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.handle_admin_login()
             if path == "/admin/logout":
                 return self.handle_admin_logout()
+            if path == "/admin/cases/bulk":
+                return self.handle_admin_cases_bulk()
             if path == "/admin/access-keys/regenerate":
                 return self.handle_admin_access_keys_regenerate()
             if path == "/admin/import":
@@ -2412,7 +2463,7 @@ class AppHandler(BaseHTTPRequestHandler):
           <div class="hero-copy">
             <div class="eyebrow">Открытая библиотека коррупционных кейсов</div>
             <h1>Российская, зарубежная и международная сравнительная практика</h1>
-            <p class="lead">Цифровой ресурс, объединяющий коррупционные кейсы России, зарубежных государств и международных организаций в единой системе сравнительного изучения.</p>
+            <p class="lead">Цифровой ресурс, объединяющий коррупционные кейсы России, зарубежных государств и международных организаций в единой системе сравнительного изучения</p>
           </div>
         </section>
 
@@ -2424,12 +2475,12 @@ class AppHandler(BaseHTTPRequestHandler):
         </section>
 
         <section class="section-block">
-          <div class="section-head"><h2>Разделы библиотеки</h2><p class="muted">Единая платформа для России, иностранных государств и международных организаций.</p></div>
+          <div class="section-head"><h2>Разделы библиотеки</h2><p class="muted">Единая платформа для России, иностранных государств и международных организаций</p></div>
           <div class="feature-grid">{section_cards}</div>
         </section>
 
         <section class="section-block">
-          <div class="section-head"><h2>Ключевые особенности ресурса</h2><p class="muted">Библиотека работает как витрина знаний, а не как архив файлов.</p></div>
+          <div class="section-head"><h2>Ключевые особенности ресурса</h2><p class="muted">Библиотека работает как витрина знаний, а не как архив файлов</p></div>
           {audience_cards}
         </section>
         """
@@ -2781,32 +2832,35 @@ class AppHandler(BaseHTTPRequestHandler):
         AccessKeysRepository.regenerate_all()
         self.handle_admin_access_keys_page(flash="Ключи доступа перегенерированы.")
 
-    def handle_admin_cases(self, query: dict[str, list[str]]) -> None:
+    def handle_admin_cases(self, query: dict[str, list[str]], flash: str = "") -> None:
         if not self.require_admin():
             return
         q = query.get("q", [""])[0]
         status = query.get("status", [""])[0]
         items = CasesRepository.list_admin(q=q, status=status)
+        flash_html = f'<div class="flash">{html_escape(flash)}</div>' if flash else ""
         rows = (
             "".join(
                 f"""<tr>
-                <td>{html_escape(item["full_name"])}</td>
+                <td class="select-cell"><input type="checkbox" name="case_id" value="{item["id"]}" aria-label="Выбрать кейс {html_escape(item["full_name"])}"></td>
+                <td class="case-title-cell"><a href="/admin/case/{item["id"]}">{html_escape(item["full_name"])}</a></td>
                 <td>{html_escape(SECTION_SHORT.get(item["section"], item["section"]))}</td>
                 <td><span class="badge status-{html_escape(item["status"])}">{html_escape(item["status"])}</span></td>
                 <td>{html_escape(item["updated_at"])}</td>
-                <td><a href="/admin/case/{item["id"]}">Открыть</a></td>
+                <td><a class="ghost compact" href="/admin/case/{item["id"]}">Открыть</a></td>
             </tr>"""
                 for item in items
             )
-            or '<tr><td colspan="5">Ничего не найдено.</td></tr>'
+            or '<tr><td colspan="6">Ничего не найдено.</td></tr>'
         )
         selected_all = "selected" if not status else ""
         selected_published = "selected" if status == "published" else ""
         selected_draft = "selected" if status == "draft" else ""
         selected_hidden = "selected" if status == "hidden" else ""
         body = f'''
-        <section class="page-head admin-head"><div><h1>Список кейсов</h1><p class="muted">Поиск, фильтрация, создание и изменение статуса.</p></div><a class="ghost" href="/admin/case/new">Создать кейс</a></section>
-        <form method="get" class="filters single admin-filter">
+        <section class="page-head admin-head admin-cases-head"><div><h1>Список кейсов</h1><p class="muted">Поиск, фильтрация, создание и изменение статуса.</p></div><a class="ghost" href="/admin/case/new">Создать кейс</a></section>
+        {flash_html}
+        <form method="get" class="filters single admin-filter admin-cases-filter">
           <input type="search" name="q" value="{html_escape(q)}" placeholder="Поиск по названию, описанию или slug">
           <select name="status">
             <option value="" {selected_all}>Все статусы</option>
@@ -2816,14 +2870,86 @@ class AppHandler(BaseHTTPRequestHandler):
           </select>
           <button type="submit">Фильтровать</button>
         </form>
-        <div class="table-wrap">
+        <form method="post" action="/admin/cases/bulk" class="table-wrap admin-cases-table" onsubmit="return confirm('Выполнить действие для выбранных кейсов?');">
+          <input type="hidden" name="q" value="{html_escape(q)}">
+          <input type="hidden" name="status_filter" value="{html_escape(status)}">
+          <input type="hidden" name="case_ids" value="">
+          <div class="bulk-actions">
+            <label class="bulk-select-all"><input type="checkbox" data-select-all> Выбрать все</label>
+            <select name="action" required>
+              <option value="">Действие с выбранными</option>
+              <option value="publish">Опубликовать</option>
+              <option value="draft">В черновик</option>
+              <option value="hide">Скрыть</option>
+              <option value="delete">Удалить</option>
+            </select>
+            <button type="submit" class="ghost danger">Применить</button>
+          </div>
           <table>
-            <thead><tr><th>Кейс</th><th>Раздел</th><th>Статус</th><th>Обновлен</th><th></th></tr></thead>
+            <thead><tr><th class="select-cell"></th><th>Кейс</th><th>Раздел</th><th>Статус</th><th>Обновлен</th><th></th></tr></thead>
             <tbody>{rows}</tbody>
           </table>
-        </div>
+        </form>
+        <script>
+          document.querySelectorAll('.admin-cases-table').forEach(function (form) {{
+            form.addEventListener('submit', function () {{
+              var selected = Array.from(form.querySelectorAll('input[name="case_id"]:checked')).map(function (checkbox) {{
+                return checkbox.value;
+              }});
+              form.querySelector('input[name="case_ids"]').value = selected.join(',');
+            }});
+          }});
+          document.querySelectorAll('[data-select-all]').forEach(function (toggle) {{
+            toggle.addEventListener('change', function () {{
+              document.querySelectorAll('input[name="case_id"]').forEach(function (checkbox) {{
+                checkbox.checked = toggle.checked;
+              }});
+            }});
+          }});
+        </script>
         '''
         self.respond_html(render_admin_layout("Кейсы", body))
+
+    def handle_admin_cases_bulk(self) -> None:
+        if not self.require_admin():
+            return
+
+        fields, _ = self.parse_form_data()
+        raw_ids = fields.get("case_ids") or fields.get("case_id", "")
+        case_ids: list[int] = []
+        for raw_id in raw_ids.split(","):
+            try:
+                case_ids.append(int(raw_id))
+            except ValueError:
+                continue
+
+        q = fields.get("q", "")
+        status_filter = fields.get("status_filter", "")
+        query = {"q": [q], "status": [status_filter]}
+        if not case_ids:
+            return self.handle_admin_cases(query, flash="Выберите хотя бы один кейс.")
+
+        action = fields.get("action", "")
+        if action in {"publish", "draft", "hide"}:
+            status_by_action = {
+                "publish": "published",
+                "draft": "draft",
+                "hide": "hidden",
+            }
+            changed = CasesRepository.change_status_many(
+                case_ids, status_by_action[action]
+            )
+            return self.handle_admin_cases(query, flash=f"Обновлено кейсов: {changed}.")
+
+        if action == "delete":
+            photo_paths, deleted_count = CasesRepository.delete_many(case_ids)
+            for photo_path in photo_paths:
+                delete_photo_file(photo_path)
+            return self.handle_admin_cases(
+                query, flash=f"Удалено кейсов: {deleted_count}."
+            )
+
+        self.handle_admin_cases(query, flash="Выберите действие.")
 
     def handle_admin_case_form(self, case_id: int | None, flash: str = "") -> None:
         if not self.require_admin():
