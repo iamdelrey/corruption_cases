@@ -46,7 +46,7 @@ PDF_FONT_CANDIDATES = [
     "C:/Windows/Fonts/arial.ttf",
     "C:/Windows/Fonts/DejaVuSans.ttf",
 ]
-HOST = os.environ.get("CASES_HOST", "127.0.0.1")
+HOST = os.environ.get("CASES_HOST") or ("0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
 PORT = int(os.environ.get("CASES_PORT") or os.environ.get("PORT", "8080"))
 ADMIN_LOGIN = os.environ.get("ADMIN_LOGIN", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
