@@ -13,16 +13,15 @@ import sqlite3
 import textwrap
 import uuid
 from datetime import datetime
-from http import HTTPStatus
+from email.parser import BytesParser
+from email.policy import default
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from docx import Document
-from email.parser import BytesParser
-from email.policy import default
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfbase import pdfmetrics
@@ -42,6 +41,8 @@ PORT = int(os.environ.get("CASES_PORT", "8080"))
 ADMIN_LOGIN = os.environ.get("ADMIN_LOGIN", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "123")
 SESSION_COOKIE = "corruption_cases_session"
+ACCESS_COOKIE = "corruption_cases_access"
+ACCESS_KEYS_COUNT = 10
 SESSIONS: dict[str, dict[str, Any]] = {}
 
 SECTION_LABELS = {
@@ -138,10 +139,38 @@ FIELD_LABELS = {
     "policy_lessons": "Выводы и уроки для антикоррупционной политики",
 }
 TRANSLIT = {
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh", "з": "z", "и": "i",
-    "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s",
-    "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "",
-    "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "y",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "h",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "sch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
 }
 
 
@@ -198,7 +227,10 @@ DOCX_FIELD_MAP = {
     "отрасль риска": "risk_sector",
     "тип коррупционного поведения": "violation_type",
 }
-AMOUNT_RE = re.compile(r"(\d[\d\s,.]*(?:млн|миллион|млрд)?\s*(?:руб\.?|рублей|USD|доллар[а-я]* США|евро))", re.I)
+AMOUNT_RE = re.compile(
+    r"(\d[\d\s,.]*(?:млн|миллион|млрд)?\s*(?:руб\.?|рублей|USD|доллар[а-я]* США|евро))",
+    re.I,
+)
 
 
 def cleanup_case_title(title: str) -> str:
@@ -253,8 +285,14 @@ def empty_case_payload() -> dict[str, Any]:
     }
 
 
-def parse_case_chunks_from_paragraphs(paragraphs: list[str], default_section: str = "russia") -> list[dict[str, Any]]:
-    normalized = [normalize_spaces(p.replace("\xa0", " ")) for p in paragraphs if normalize_spaces(p)]
+def parse_case_chunks_from_paragraphs(
+    paragraphs: list[str], default_section: str = "russia"
+) -> list[dict[str, Any]]:
+    normalized = [
+        normalize_spaces(p.replace("\xa0", " "))
+        for p in paragraphs
+        if normalize_spaces(p)
+    ]
     if not normalized:
         return []
 
@@ -285,7 +323,11 @@ def parse_case_chunks_from_paragraphs(paragraphs: list[str], default_section: st
         for line in chunk["lines"]:
             section_match = DOCX_SECTION_RE.match(line)
             if section_match:
-                current_block = section_match.group(1).lower().replace(" для антикоррупционной политики", "")
+                current_block = (
+                    section_match.group(1)
+                    .lower()
+                    .replace(" для антикоррупционной политики", "")
+                )
                 blocks.setdefault(current_block, [])
                 continue
             if current_block:
@@ -300,7 +342,11 @@ def parse_case_chunks_from_paragraphs(paragraphs: list[str], default_section: st
                 continue
             data[target] = normalize_spaces(value).rstrip(".")
 
-        if data["section"] == "russia" and data["country"] and "россий" in data["country"].lower():
+        if (
+            data["section"] == "russia"
+            and data["country"]
+            and "россий" in data["country"].lower()
+        ):
             data["country"] = "Россия"
         if data["organization"] and data["section"] == "russia":
             data["section"] = "intl-orgs"
@@ -320,14 +366,18 @@ def parse_case_chunks_from_paragraphs(paragraphs: list[str], default_section: st
         for line in blocks.get("источники", []):
             cleaned = re.sub(r"^\d+[\).]?\s*", "", line).strip()
             if cleaned:
-                data["sources"].append({"gost_text": cleaned, "url": extract_url(cleaned)})
+                data["sources"].append(
+                    {"gost_text": cleaned, "url": extract_url(cleaned)}
+                )
 
-        amount_source = " ".join([
-            data["case_summary"],
-            data["legal_qualification"],
-            data["case_progress"],
-            data["consequences"],
-        ])
+        amount_source = " ".join(
+            [
+                data["case_summary"],
+                data["legal_qualification"],
+                data["case_progress"],
+                data["consequences"],
+            ]
+        )
         amount_match = AMOUNT_RE.search(amount_source)
         if amount_match:
             data["amount"] = normalize_spaces(amount_match.group(1))
@@ -335,7 +385,10 @@ def parse_case_chunks_from_paragraphs(paragraphs: list[str], default_section: st
             data["amount"] = "особо крупный размер"
 
         data["short_description"] = build_short_description(
-            data["case_summary"] or data["violation_type"] or data["risk_sector"] or data["full_name"]
+            data["case_summary"]
+            or data["violation_type"]
+            or data["risk_sector"]
+            or data["full_name"]
         )
         parsed_cases.append(data)
 
@@ -361,15 +414,16 @@ def load_seed_cases() -> list[dict[str, Any]]:
     return result
 
 
-
-
 class SimpleUploadedFile:
     def __init__(self, filename: str, content: bytes) -> None:
         self.file_name = filename
         self.size = len(content)
         self.file_object = io.BytesIO(content)
 
-def section_to_placeholder(section: str, country: str | None, organization: str | None) -> str:
+
+def section_to_placeholder(
+    section: str, country: str | None, organization: str | None
+) -> str:
     if section == "russia":
         return "РФ"
     if section == "foreign":
@@ -458,6 +512,15 @@ class Database:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS access_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    access_key TEXT NOT NULL UNIQUE,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    uses_count INTEGER NOT NULL DEFAULT 0,
+                    last_used_at TEXT,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             about = conn.execute("SELECT id FROM about_page WHERE id = 1").fetchone()
@@ -473,6 +536,8 @@ class Database:
                     ),
                 )
             self.apply_data_migrations(conn)
+            AccessKeysRepository.ensure_initial_keys(conn)
+
             for item in VIOLATION_PRESETS:
                 conn.execute(
                     "INSERT OR IGNORE INTO violation_types(name, description) VALUES (?, ?)",
@@ -487,22 +552,34 @@ class Database:
         finally:
             conn.close()
 
-
-
     def apply_data_migrations(self, conn: sqlite3.Connection) -> None:
-        case_columns = {row["name"] for row in conn.execute("PRAGMA table_info(cases)").fetchall()}
+        case_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(cases)").fetchall()
+        }
         if "violation_description" not in case_columns:
-            conn.execute("ALTER TABLE cases ADD COLUMN violation_description TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "ALTER TABLE cases ADD COLUMN violation_description TEXT NOT NULL DEFAULT ''"
+            )
 
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(violation_types)").fetchall()}
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(violation_types)").fetchall()
+        }
         if "description" not in columns:
-            conn.execute("ALTER TABLE violation_types ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "ALTER TABLE violation_types ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+            )
 
         migration_key = "clear-initial-violation-types-v1"
-        already_done = conn.execute("SELECT value FROM app_settings WHERE key = ?", (migration_key,)).fetchone()
+        already_done = conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (migration_key,)
+        ).fetchone()
         if not already_done:
             conn.execute("DELETE FROM violation_types")
-            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?)", (migration_key, now_iso()))
+            conn.execute(
+                "INSERT INTO app_settings(key, value) VALUES (?, ?)",
+                (migration_key, now_iso()),
+            )
 
         rows = conn.execute("SELECT id, name FROM countries ORDER BY id ASC").fetchall()
         seen: set[str] = set()
@@ -517,26 +594,40 @@ class Database:
                 continue
             seen.add(normalized_key)
             if normalized != row["name"]:
-                conn.execute("UPDATE countries SET name = ? WHERE id = ?", (normalized, row["id"]))
+                conn.execute(
+                    "UPDATE countries SET name = ? WHERE id = ?",
+                    (normalized, row["id"]),
+                )
 
-        case_country_rows = conn.execute("SELECT id, country FROM cases WHERE country IS NOT NULL AND country != ''").fetchall()
+        case_country_rows = conn.execute(
+            "SELECT id, country FROM cases WHERE country IS NOT NULL AND country != ''"
+        ).fetchall()
         for row in case_country_rows:
             normalized = normalize_country_name(row["country"])
             if normalized != row["country"]:
-                conn.execute("UPDATE cases SET country = ? WHERE id = ?", (normalized, row["id"]))
+                conn.execute(
+                    "UPDATE cases SET country = ? WHERE id = ?", (normalized, row["id"])
+                )
 
-        conn.execute("UPDATE cases SET photo_path = NULL WHERE lower(full_name) LIKE lower(?)", ("%Роберт Менендес%",))
+        conn.execute(
+            "UPDATE cases SET photo_path = NULL WHERE lower(full_name) LIKE lower(?)",
+            ("%Роберт Менендес%",),
+        )
 
     def seed_demo(self, conn: sqlite3.Connection) -> None:
         seeds = load_seed_cases()
         if seeds:
-            existing_slugs = {row["slug"] for row in conn.execute("SELECT slug FROM cases").fetchall()}
+            existing_slugs = {
+                row["slug"] for row in conn.execute("SELECT slug FROM cases").fetchall()
+            }
             for sample in seeds:
                 if sample["slug"] in existing_slugs:
                     continue
                 created_at = now_iso()
                 updated_at = created_at
-                published_at = created_at if sample.get("status") == "published" else None
+                published_at = (
+                    created_at if sample.get("status") == "published" else None
+                )
                 conn.execute(
                     textwrap.dedent(
                         """
@@ -549,24 +640,50 @@ class Database:
                         """
                     ),
                     (
-                        sample["slug"], sample["section"], sample["full_name"], sample["short_description"], None,
-                        sample.get("year_or_period"), sample.get("amount"), sample.get("country"), sample.get("organization"),
-                        sample.get("jurisdiction"), sample.get("governance_level"), sample.get("risk_sector"),
-                        sample.get("violation_type"), sample.get("violation_description", ""), sample.get("case_summary"), sample.get("legal_qualification"),
-                        sample.get("case_progress"), sample.get("consequences"), sample.get("institutional_effects"),
-                        sample.get("policy_lessons"), sample.get("status") or "published", published_at, created_at, updated_at,
+                        sample["slug"],
+                        sample["section"],
+                        sample["full_name"],
+                        sample["short_description"],
+                        None,
+                        sample.get("year_or_period"),
+                        sample.get("amount"),
+                        sample.get("country"),
+                        sample.get("organization"),
+                        sample.get("jurisdiction"),
+                        sample.get("governance_level"),
+                        sample.get("risk_sector"),
+                        sample.get("violation_type"),
+                        sample.get("violation_description", ""),
+                        sample.get("case_summary"),
+                        sample.get("legal_qualification"),
+                        sample.get("case_progress"),
+                        sample.get("consequences"),
+                        sample.get("institutional_effects"),
+                        sample.get("policy_lessons"),
+                        sample.get("status") or "published",
+                        published_at,
+                        created_at,
+                        updated_at,
                     ),
                 )
-                case_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                case_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()[
+                    "id"
+                ]
                 for index, source in enumerate(sample.get("sources", []), start=1):
                     conn.execute(
                         "INSERT INTO sources(case_id, gost_text, url, sort_order) VALUES (?, ?, ?, ?)",
                         (case_id, source["gost_text"], source.get("url"), index),
                     )
                 if sample.get("country"):
-                    conn.execute("INSERT OR IGNORE INTO countries(name) VALUES (?)", (sample["country"],))
+                    conn.execute(
+                        "INSERT OR IGNORE INTO countries(name) VALUES (?)",
+                        (sample["country"],),
+                    )
                 if sample.get("organization"):
-                    conn.execute("INSERT OR IGNORE INTO organizations(name) VALUES (?)", (sample["organization"],))
+                    conn.execute(
+                        "INSERT OR IGNORE INTO organizations(name) VALUES (?)",
+                        (sample["organization"],),
+                    )
             return
 
         existing = conn.execute("SELECT COUNT(*) AS cnt FROM cases").fetchone()["cnt"]
@@ -652,27 +769,144 @@ class Database:
                     """
                 ),
                 (
-                    sample["slug"], sample["section"], sample["full_name"], sample["short_description"], None,
-                    sample.get("year_or_period"), sample.get("amount"), sample.get("country"), sample.get("organization"),
-                    sample.get("jurisdiction"), sample.get("governance_level"), sample.get("risk_sector"),
-                    sample.get("violation_type"), sample.get("violation_description", ""), sample.get("case_summary"), sample.get("legal_qualification"),
-                    sample.get("case_progress"), sample.get("consequences"), sample.get("institutional_effects"),
-                    sample.get("policy_lessons"), sample["status"], sample.get("published_at"), created_at, updated_at,
+                    sample["slug"],
+                    sample["section"],
+                    sample["full_name"],
+                    sample["short_description"],
+                    None,
+                    sample.get("year_or_period"),
+                    sample.get("amount"),
+                    sample.get("country"),
+                    sample.get("organization"),
+                    sample.get("jurisdiction"),
+                    sample.get("governance_level"),
+                    sample.get("risk_sector"),
+                    sample.get("violation_type"),
+                    sample.get("violation_description", ""),
+                    sample.get("case_summary"),
+                    sample.get("legal_qualification"),
+                    sample.get("case_progress"),
+                    sample.get("consequences"),
+                    sample.get("institutional_effects"),
+                    sample.get("policy_lessons"),
+                    sample["status"],
+                    sample.get("published_at"),
+                    created_at,
+                    updated_at,
                 ),
             )
-            case_id = conn.execute("SELECT id FROM cases WHERE slug = ?", (sample["slug"],)).fetchone()["id"]
+            case_id = conn.execute(
+                "SELECT id FROM cases WHERE slug = ?", (sample["slug"],)
+            ).fetchone()["id"]
             conn.execute(
                 "INSERT INTO sources(case_id, gost_text, url, sort_order) VALUES (?, ?, ?, ?)",
-                (case_id, f"Демонстрационный источник по кейсу «{sample['full_name']}».", "https://example.org", 1),
+                (
+                    case_id,
+                    f"Демонстрационный источник по кейсу «{sample['full_name']}».",
+                    "https://example.org",
+                    1,
+                ),
             )
             if sample.get("country"):
-                conn.execute("INSERT OR IGNORE INTO countries(name) VALUES (?)", (sample["country"],))
+                conn.execute(
+                    "INSERT OR IGNORE INTO countries(name) VALUES (?)",
+                    (sample["country"],),
+                )
             if sample.get("organization"):
-                conn.execute("INSERT OR IGNORE INTO organizations(name) VALUES (?)", (sample["organization"],))
+                conn.execute(
+                    "INSERT OR IGNORE INTO organizations(name) VALUES (?)",
+                    (sample["organization"],),
+                )
 
 
 DB = Database(DB_PATH)
 
+
+class AccessKeysRepository:
+    @staticmethod
+    def generate_key() -> str:
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        groups = []
+        for _ in range(4):
+            groups.append("".join(secrets.choice(alphabet) for _ in range(5)))
+        return "-".join(groups)
+
+    @staticmethod
+    def ensure_initial_keys(conn: sqlite3.Connection) -> None:
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM access_keys").fetchone()
+        if row and int(row["cnt"]) > 0:
+            return
+
+        created_at = now_iso()
+        for _ in range(ACCESS_KEYS_COUNT):
+            conn.execute(
+                """
+                INSERT INTO access_keys(access_key, is_active, uses_count, last_used_at, created_at)
+                VALUES (?, 1, 0, NULL, ?)
+                """,
+                (AccessKeysRepository.generate_key(), created_at),
+            )
+
+    @staticmethod
+    def is_valid_key(access_key: str) -> bool:
+        access_key = normalize_spaces(access_key).upper()
+        if not access_key:
+            return False
+
+        conn = DB.connect()
+        try:
+            row = conn.execute(
+                "SELECT id FROM access_keys WHERE access_key = ? AND is_active = 1",
+                (access_key,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def register_usage(access_key: str) -> None:
+        access_key = normalize_spaces(access_key).upper()
+        if not access_key:
+            return
+
+        conn = DB.connect()
+        try:
+            conn.execute(
+                """
+                UPDATE access_keys
+                SET uses_count = uses_count + 1,
+                    last_used_at = ?
+                WHERE access_key = ? AND is_active = 1
+                """,
+                (now_iso(), access_key),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def list_keys() -> list[sqlite3.Row]:
+        conn = DB.connect()
+        try:
+            return conn.execute(
+                """
+                SELECT access_key, is_active, uses_count, last_used_at, created_at
+                FROM access_keys
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def regenerate_all() -> None:
+        conn = DB.connect()
+        try:
+            conn.execute("DELETE FROM access_keys")
+            AccessKeysRepository.ensure_initial_keys(conn)
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def ensure_dirs() -> None:
@@ -687,8 +921,12 @@ class CasesRepository:
         conn = DB.connect()
         try:
             if include_hidden:
-                return conn.execute("SELECT * FROM cases WHERE slug = ?", (slug,)).fetchone()
-            return conn.execute("SELECT * FROM cases WHERE slug = ? AND status = 'published'", (slug,)).fetchone()
+                return conn.execute(
+                    "SELECT * FROM cases WHERE slug = ?", (slug,)
+                ).fetchone()
+            return conn.execute(
+                "SELECT * FROM cases WHERE slug = ? AND status = 'published'", (slug,)
+            ).fetchone()
         finally:
             conn.close()
 
@@ -696,7 +934,9 @@ class CasesRepository:
     def get_case_by_id(case_id: int) -> sqlite3.Row | None:
         conn = DB.connect()
         try:
-            return conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
+            return conn.execute(
+                "SELECT * FROM cases WHERE id = ?", (case_id,)
+            ).fetchone()
         finally:
             conn.close()
 
@@ -704,7 +944,10 @@ class CasesRepository:
     def get_sources(case_id: int) -> list[sqlite3.Row]:
         conn = DB.connect()
         try:
-            return conn.execute("SELECT * FROM sources WHERE case_id = ? ORDER BY sort_order, id", (case_id,)).fetchall()
+            return conn.execute(
+                "SELECT * FROM sources WHERE case_id = ? ORDER BY sort_order, id",
+                (case_id,),
+            ).fetchall()
         finally:
             conn.close()
 
@@ -718,11 +961,28 @@ class CasesRepository:
             if data.get("status") == "published" and not published_at:
                 published_at = created_at
             payload = (
-                data["slug"], data["section"], data["full_name"], data["short_description"], data.get("photo_path"),
-                data.get("year_or_period"), data.get("amount"), data.get("country"), data.get("organization"),
-                data.get("jurisdiction"), data.get("governance_level"), data.get("risk_sector"), data.get("violation_type"),
-                data.get("violation_description"), data.get("case_summary"), data.get("legal_qualification"), data.get("case_progress"), data.get("consequences"),
-                data.get("institutional_effects"), data.get("policy_lessons"), data["status"], published_at,
+                data["slug"],
+                data["section"],
+                data["full_name"],
+                data["short_description"],
+                data.get("photo_path"),
+                data.get("year_or_period"),
+                data.get("amount"),
+                data.get("country"),
+                data.get("organization"),
+                data.get("jurisdiction"),
+                data.get("governance_level"),
+                data.get("risk_sector"),
+                data.get("violation_type"),
+                data.get("violation_description"),
+                data.get("case_summary"),
+                data.get("legal_qualification"),
+                data.get("case_progress"),
+                data.get("consequences"),
+                data.get("institutional_effects"),
+                data.get("policy_lessons"),
+                data["status"],
+                published_at,
             )
             if case_id is None:
                 conn.execute(
@@ -738,7 +998,9 @@ class CasesRepository:
                     ),
                     payload + (created_at, updated_at),
                 )
-                case_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                case_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()[
+                    "id"
+                ]
             else:
                 conn.execute(
                     textwrap.dedent(
@@ -760,9 +1022,15 @@ class CasesRepository:
                     (case_id, source["gost_text"], source.get("url"), index),
                 )
             if data.get("country"):
-                conn.execute("INSERT OR IGNORE INTO countries(name) VALUES (?)", (data["country"],))
+                conn.execute(
+                    "INSERT OR IGNORE INTO countries(name) VALUES (?)",
+                    (data["country"],),
+                )
             if data.get("organization"):
-                conn.execute("INSERT OR IGNORE INTO organizations(name) VALUES (?)", (data["organization"],))
+                conn.execute(
+                    "INSERT OR IGNORE INTO organizations(name) VALUES (?)",
+                    (data["organization"],),
+                )
             conn.commit()
             return int(case_id)
         finally:
@@ -784,7 +1052,14 @@ class CasesRepository:
             conn.close()
 
     @staticmethod
-    def list_public(section: str | None = None, q: str = "", country: str = "", violation_type: str = "", year: str = "", sort: str = "new") -> list[sqlite3.Row]:
+    def list_public(
+        section: str | None = None,
+        q: str = "",
+        country: str = "",
+        violation_type: str = "",
+        year: str = "",
+        sort: str = "new",
+    ) -> list[sqlite3.Row]:
         conn = DB.connect()
         try:
             clauses = ["status = 'published'"]
@@ -794,10 +1069,20 @@ class CasesRepository:
                 params.append(section)
             if q:
                 like = f"%{q.strip()}%"
-                search_fields = " OR ".join([
-                    "full_name LIKE ?", "short_description LIKE ?", "country LIKE ?", "organization LIKE ?", "violation_type LIKE ?",
-                    "case_summary LIKE ?", "legal_qualification LIKE ?", "case_progress LIKE ?", "consequences LIKE ?", "policy_lessons LIKE ?",
-                ])
+                search_fields = " OR ".join(
+                    [
+                        "full_name LIKE ?",
+                        "short_description LIKE ?",
+                        "country LIKE ?",
+                        "organization LIKE ?",
+                        "violation_type LIKE ?",
+                        "case_summary LIKE ?",
+                        "legal_qualification LIKE ?",
+                        "case_progress LIKE ?",
+                        "consequences LIKE ?",
+                        "policy_lessons LIKE ?",
+                    ]
+                )
                 clauses.append(f"({search_fields})")
                 params.extend([like] * 10)
             if country:
@@ -814,13 +1099,17 @@ class CasesRepository:
                 "alpha": "full_name COLLATE NOCASE ASC",
                 "country": "country COLLATE NOCASE ASC, full_name COLLATE NOCASE ASC",
             }.get(sort, "published_at DESC, updated_at DESC")
-            sql = f"SELECT * FROM cases WHERE {' AND '.join(clauses)} ORDER BY {order_by}"
+            sql = (
+                f"SELECT * FROM cases WHERE {' AND '.join(clauses)} ORDER BY {order_by}"
+            )
             return conn.execute(sql, params).fetchall()
         finally:
             conn.close()
 
     @staticmethod
-    def list_related_by_violation(case_id: int, violation_type: str, limit: int = 3) -> list[sqlite3.Row]:
+    def list_related_by_violation(
+        case_id: int, violation_type: str, limit: int = 3
+    ) -> list[sqlite3.Row]:
         violation_type = normalize_spaces(violation_type)
         if not violation_type:
             return []
@@ -848,7 +1137,9 @@ class CasesRepository:
             params: list[Any] = []
             if q:
                 like = f"%{q.strip()}%"
-                clauses.append("(full_name LIKE ? OR short_description LIKE ? OR slug LIKE ?)")
+                clauses.append(
+                    "(full_name LIKE ? OR short_description LIKE ? OR slug LIKE ?)"
+                )
                 params.extend([like, like, like])
             if status:
                 clauses.append("status = ?")
@@ -863,12 +1154,18 @@ class CasesRepository:
         conn = DB.connect()
         try:
             result = {}
-            result["all"] = conn.execute("SELECT COUNT(*) AS cnt FROM cases").fetchone()["cnt"]
+            result["all"] = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM cases"
+            ).fetchone()["cnt"]
             for status in ["published", "draft", "hidden"]:
-                result[status] = conn.execute("SELECT COUNT(*) AS cnt FROM cases WHERE status = ?", (status,)).fetchone()["cnt"]
+                result[status] = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM cases WHERE status = ?", (status,)
+                ).fetchone()["cnt"]
             for section in SECTION_LABELS:
                 key = section.replace("-", "_")
-                result[key] = conn.execute("SELECT COUNT(*) AS cnt FROM cases WHERE section = ?", (section,)).fetchone()["cnt"]
+                result[key] = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM cases WHERE section = ?", (section,)
+                ).fetchone()["cnt"]
             return {k: int(v) for k, v in result.items()}
         finally:
             conn.close()
@@ -885,7 +1182,9 @@ class CasesRepository:
             conn.close()
 
     @staticmethod
-    def update_about(goal: str, methodology: str, contacts: str, education_note: str) -> None:
+    def update_about(
+        goal: str, methodology: str, contacts: str, education_note: str
+    ) -> None:
         conn = DB.connect()
         try:
             conn.execute(
@@ -904,11 +1203,17 @@ class CasesRepository:
             return list(VIOLATION_PRESETS)
         conn = DB.connect()
         try:
-            rows = conn.execute(f"SELECT name FROM {table} ORDER BY name COLLATE NOCASE ASC").fetchall()
+            rows = conn.execute(
+                f"SELECT name FROM {table} ORDER BY name COLLATE NOCASE ASC"
+            ).fetchall()
             result: list[str] = []
             seen: set[str] = set()
             for row in rows:
-                name = normalize_country_name(row["name"]) if table == "countries" else normalize_spaces(row["name"])
+                name = (
+                    normalize_country_name(row["name"])
+                    if table == "countries"
+                    else normalize_spaces(row["name"])
+                )
                 key = name.casefold()
                 if name and key not in seen:
                     result.append(name)
@@ -926,7 +1231,12 @@ class CasesRepository:
             ).fetchall()
             description_by_name = {row["name"]: row["description"] for row in rows}
             return [
-                {"name": name, "description": description_by_name.get(name, VIOLATION_DESCRIPTIONS.get(name, ""))}
+                {
+                    "name": name,
+                    "description": description_by_name.get(
+                        name, VIOLATION_DESCRIPTIONS.get(name, "")
+                    ),
+                }
                 for name in VIOLATION_PRESETS
             ]
         finally:
@@ -939,7 +1249,10 @@ class CasesRepository:
             return ""
         conn = DB.connect()
         try:
-            row = conn.execute("SELECT COALESCE(description, '') AS description FROM violation_types WHERE name = ?", (name,)).fetchone()
+            row = conn.execute(
+                "SELECT COALESCE(description, '') AS description FROM violation_types WHERE name = ?",
+                (name,),
+            ).fetchone()
             return row["description"] if row else ""
         finally:
             conn.close()
@@ -989,7 +1302,11 @@ class CasesRepository:
             return 0
         conn = DB.connect()
         try:
-            return int(conn.execute(f"SELECT COUNT(*) AS cnt FROM cases WHERE {field} = ?", (name,)).fetchone()["cnt"])
+            return int(
+                conn.execute(
+                    f"SELECT COUNT(*) AS cnt FROM cases WHERE {field} = ?", (name,)
+                ).fetchone()["cnt"]
+            )
         finally:
             conn.close()
 
@@ -1022,7 +1339,11 @@ def parse_sources_text(sources_text: str) -> list[dict[str, str]]:
 
 def save_uploaded_file(file_obj, folder: Path, prefix: str) -> str:
     folder.mkdir(parents=True, exist_ok=True)
-    original_name = Path(file_obj.file_name.decode("utf-8", errors="ignore") if isinstance(file_obj.file_name, bytes) else (file_obj.file_name or "upload.bin")).name
+    original_name = Path(
+        file_obj.file_name.decode("utf-8", errors="ignore")
+        if isinstance(file_obj.file_name, bytes)
+        else (file_obj.file_name or "upload.bin")
+    ).name
     ext = Path(original_name).suffix.lower() or ".bin"
     name = f"{prefix}-{uuid.uuid4().hex}{ext}"
     target = folder / name
@@ -1065,17 +1386,23 @@ def delete_photo_file(photo_path: str | None) -> None:
 
 def parse_docx_bytes(content: bytes) -> dict[str, Any]:
     doc = Document(io.BytesIO(content))
-    cases = parse_case_chunks_from_paragraphs([p.text for p in doc.paragraphs], default_section="russia")
+    cases = parse_case_chunks_from_paragraphs(
+        [p.text for p in doc.paragraphs], default_section="russia"
+    )
     if not cases:
         return empty_case_payload()
     return cases[0]
 
 
 def text_to_paragraphs(value: str) -> str:
-    blocks = [block.strip() for block in re.split(r"\n\n+", value or "") if block.strip()]
+    blocks = [
+        block.strip() for block in re.split(r"\n\n+", value or "") if block.strip()
+    ]
     if not blocks:
         return '<p class="muted">Нет данных.</p>'
-    return "".join(f"<p>{html_escape(block).replace(chr(10), '<br>')}</p>" for block in blocks)
+    return "".join(
+        f"<p>{html_escape(block).replace(chr(10), '<br>')}</p>" for block in blocks
+    )
 
 
 def field_input(value: str) -> str:
@@ -1085,7 +1412,14 @@ def field_input(value: str) -> str:
     return "".join(f"<p>{html_escape(part)}</p>" for part in parts)
 
 
-def field_input(name: str, label: str, value: str = "", input_type: str = "text", required: bool = False, datalist: str = "") -> str:
+def field_input(
+    name: str,
+    label: str,
+    value: str = "",
+    input_type: str = "text",
+    required: bool = False,
+    datalist: str = "",
+) -> str:
     attrs = " required" if required else ""
     list_attr = f' list="{datalist}"' if datalist else ""
     return f'''<label class="form-field"><span>{html_escape(label)}</span><input type="{input_type}" name="{html_escape(name)}" value="{html_escape(value)}"{attrs}{list_attr}></label>'''
@@ -1095,9 +1429,17 @@ def textarea_input(name: str, label: str, value: str = "", rows: int = 5) -> str
     return f'''<label class="form-field"><span>{html_escape(label)}</span><textarea name="{html_escape(name)}" rows="{rows}">{html_escape(value)}</textarea></label>'''
 
 
-def select_input(name: str, label: str, value: str, options: list[str], empty_label: str = "Не выбрано") -> str:
+def select_input(
+    name: str,
+    label: str,
+    value: str,
+    options: list[str],
+    empty_label: str = "Не выбрано",
+) -> str:
     normalized_value = normalize_spaces(value)
-    normalized_options = [normalize_spaces(option) for option in options if normalize_spaces(option)]
+    normalized_options = [
+        normalize_spaces(option) for option in options if normalize_spaces(option)
+    ]
     if normalized_value and normalized_value not in normalized_options:
         normalized_options = [normalized_value] + normalized_options
     option_html = f'<option value="">{html_escape(empty_label)}</option>'
@@ -1112,11 +1454,16 @@ def render_datalists() -> str:
     countries = CasesRepository.list_dictionary("countries")
     orgs = CasesRepository.list_dictionary("organizations")
     vtypes = CasesRepository.list_dictionary("violation_types")
-    def build(name: str, values: list[str]) -> str:
-        options = "".join(f"<option value=\"{html_escape(v)}\"></option>" for v in values)
-        return f"<datalist id=\"{name}\">{options}</datalist>"
-    return build("countries-list", countries) + build("orgs-list", orgs) + build("violation-list", vtypes)
 
+    def build(name: str, values: list[str]) -> str:
+        options = "".join(f'<option value="{html_escape(v)}"></option>' for v in values)
+        return f'<datalist id="{name}">{options}</datalist>'
+
+    return (
+        build("countries-list", countries)
+        + build("orgs-list", orgs)
+        + build("violation-list", vtypes)
+    )
 
 
 def render_public_layout(title: str, body: str, current_section: str = "") -> bytes:
@@ -1371,7 +1718,7 @@ def render_admin_photo_cropper_script() -> str:
 
 def render_admin_layout(title: str, body: str, flash: str = "") -> bytes:
     flash_html = f'<div class="flash">{html_escape(flash)}</div>' if flash else ""
-    html_doc = f'''<!doctype html>
+    html_doc = f"""<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
@@ -1387,6 +1734,7 @@ def render_admin_layout(title: str, body: str, flash: str = "") -> bytes:
       <a href="/admin/cases">Кейсы</a>
       <a href="/admin/import">Импорт из Word</a>
       <a href="/admin/dictionaries">Справочники</a>
+      <a href="/admin/access-keys">Ключи доступа</a>
       <a href="/admin/about">О проекте</a>
     </nav>
     <form method="post" action="/admin/logout"><button type="submit" class="ghost full">Выйти</button></form>
@@ -1396,16 +1744,17 @@ def render_admin_layout(title: str, body: str, flash: str = "") -> bytes:
   </main>
   {render_admin_photo_cropper_script()}
 </body>
-</html>'''
+</html>"""
     return html_doc.encode("utf-8")
-
 
 
 def render_case_card(case: sqlite3.Row) -> str:
     if case["photo_path"]:
         media = f'<img class="case-photo" src="/uploads/photos/{quote(case["photo_path"])}" alt="{html_escape(case["full_name"])}">'
     else:
-        placeholder = section_to_placeholder(case["section"], case["country"], case["organization"])
+        placeholder = section_to_placeholder(
+            case["section"], case["country"], case["organization"]
+        )
         media = f'<div class="case-photo placeholder section-{html_escape(case["section"])}"><span>{html_escape(placeholder)}</span></div>'
 
     chips: list[str] = []
@@ -1417,15 +1766,17 @@ def render_case_card(case: sqlite3.Row) -> str:
         chips.append(case["year_or_period"])
     if case["violation_type"]:
         chips.append(case["violation_type"])
-    chips_html = "".join(f'<span class="chip">{html_escape(item)}</span>' for item in chips[:3])
+    chips_html = "".join(
+        f'<span class="chip">{html_escape(item)}</span>' for item in chips[:3]
+    )
 
     return f"""
     <article class="case-card">
-      <a href="/case/{html_escape(case['slug'])}">
+      <a href="/case/{html_escape(case["slug"])}">
         <div class="case-media">{media}</div>
         <div class="case-card-body">
-          <h3>{html_escape(case['full_name'])}</h3>
-          <p>{html_escape(case['short_description'])}</p>
+          <h3>{html_escape(case["full_name"])}</h3>
+          <p>{html_escape(case["short_description"])}</p>
           <div class="chip-row">{chips_html}</div>
         </div>
       </a>
@@ -1433,14 +1784,18 @@ def render_case_card(case: sqlite3.Row) -> str:
     """
 
 
-def build_public_filters(section: str, q: str, country: str, violation_type: str, year: str, sort: str) -> str:
+def build_public_filters(
+    section: str, q: str, country: str, violation_type: str, year: str, sort: str
+) -> str:
     countries = CasesRepository.list_dictionary("countries")
     violation_types = CasesRepository.list_dictionary("violation_types")
     country_options = '<option value="">Все страны</option>' + "".join(
-        f'<option value="{html_escape(item)}" {"selected" if item == country else ""}>{html_escape(item)}</option>' for item in countries
+        f'<option value="{html_escape(item)}" {"selected" if item == country else ""}>{html_escape(item)}</option>'
+        for item in countries
     )
     violation_options = '<option value="">Все типы нарушений</option>' + "".join(
-        f'<option value="{html_escape(item)}" {"selected" if item == violation_type else ""}>{html_escape(item)}</option>' for item in violation_types
+        f'<option value="{html_escape(item)}" {"selected" if item == violation_type else ""}>{html_escape(item)}</option>'
+        for item in violation_types
     )
     sort_options = [
         ("new", "Сначала новые"),
@@ -1448,7 +1803,8 @@ def build_public_filters(section: str, q: str, country: str, violation_type: str
         ("country", "По стране"),
     ]
     sort_html = "".join(
-        f'<option value="{key}" {"selected" if sort == key else ""}>{label}</option>' for key, label in sort_options
+        f'<option value="{key}" {"selected" if sort == key else ""}>{label}</option>'
+        for key, label in sort_options
     )
     return f"""
     <div class="filters-area">
@@ -1467,7 +1823,9 @@ def build_public_filters(section: str, q: str, country: str, violation_type: str
 
 def build_case_form(case: dict[str, Any]) -> str:
     sources_value = "\n".join(
-        f"{item['gost_text']} | {item.get('url', '')}" if item.get("url") else item["gost_text"]
+        f"{item['gost_text']} | {item.get('url', '')}"
+        if item.get("url")
+        else item["gost_text"]
         for item in case.get("sources", [])
     )
     section_options = "".join(
@@ -1485,7 +1843,7 @@ def build_case_form(case: dict[str, Any]) -> str:
         </div>"""
     else:
         photo_note = '<div class="muted">Фото не загружено.</div>'
-    return f'''
+    return f"""
       {render_datalists()}
       <div class="form-grid two">
         <label class="form-field"><span>Раздел</span><select name="section">{section_options}</select></label>
@@ -1529,7 +1887,7 @@ def build_case_form(case: dict[str, Any]) -> str:
       <div class="form-actions">
         <button type="submit">Сохранить</button>
       </div>
-    '''
+    """
 
 
 def generate_case_pdf(case: sqlite3.Row, sources: list[sqlite3.Row]) -> bytes:
@@ -1590,7 +1948,13 @@ def generate_case_pdf(case: sqlite3.Row, sources: list[sqlite3.Row]) -> bytes:
     write_block("Последствия", case["consequences"])
     write_block("Институциональные эффекты", case["institutional_effects"])
     write_block("Выводы и уроки для антикоррупционной политики", case["policy_lessons"])
-    write_block("Источники", "\n".join([s["gost_text"] + (f" ({s['url']})" if s["url"] else "") for s in sources]) or "Нет источников.")
+    write_block(
+        "Источники",
+        "\n".join(
+            [s["gost_text"] + (f" ({s['url']})" if s["url"] else "") for s in sources]
+        )
+        or "Нет источников.",
+    )
     pdf.save()
     return buffer.getvalue()
 
@@ -1599,32 +1963,22 @@ class AppHandler(BaseHTTPRequestHandler):
     server_version = "CorruptionCasesMVP/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:
-        print("%s - - [%s] %s" % (self.address_string(), self.log_date_time_string(), format % args))
+        print(
+            "%s - - [%s] %s"
+            % (self.address_string(), self.log_date_time_string(), format % args)
+        )
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
         try:
-            if path == "/":
-                return self.handle_home()
+            if path == "/access":
+                return self.handle_access_page(query)
+
             if path.startswith("/static/"):
                 return self.handle_static(path)
-            if path.startswith("/uploads/"):
-                return self.handle_uploads(path)
-            if path.startswith("/cases/"):
-                section = path.split("/", 2)[2]
-                return self.handle_section(section, query)
-            if path.startswith("/case/") and path.endswith("/pdf"):
-                slug = path.removeprefix("/case/").removesuffix("/pdf").strip("/")
-                return self.handle_case_pdf(slug)
-            if path.startswith("/case/"):
-                slug = path.split("/", 2)[2]
-                return self.handle_case(slug)
-            if path == "/about":
-                return self.handle_about()
-            if path == "/search":
-                return self.handle_search(query)
+
             if path == "/admin/login":
                 return self.handle_admin_login_page()
             if path == "/admin":
@@ -1642,6 +1996,30 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.handle_admin_about_page()
             if path == "/admin/dictionaries":
                 return self.handle_admin_dictionaries_page()
+            if path == "/admin/access-keys":
+                return self.handle_admin_access_keys_page()
+
+            if not self.require_public_access():
+                return
+
+            if path == "/":
+                return self.handle_home()
+            if path.startswith("/uploads/"):
+                return self.handle_uploads(path)
+            if path.startswith("/cases/"):
+                section = path.split("/", 2)[2]
+                return self.handle_section(section, query)
+            if path.startswith("/case/") and path.endswith("/pdf"):
+                slug = path.removeprefix("/case/").removesuffix("/pdf").strip("/")
+                return self.handle_case_pdf(slug)
+            if path.startswith("/case/"):
+                slug = path.split("/", 2)[2]
+                return self.handle_case(slug)
+            if path == "/about":
+                return self.handle_about()
+            if path == "/search":
+                return self.handle_search(query)
+
             return self.respond_text("Не найдено", status=404)
         except Exception as exc:
             return self.respond_text(f"Внутренняя ошибка: {exc}", status=500)
@@ -1650,10 +2028,15 @@ class AppHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         try:
+            if path == "/access":
+                return self.handle_access_submit()
+
             if path == "/admin/login":
                 return self.handle_admin_login()
             if path == "/admin/logout":
                 return self.handle_admin_logout()
+            if path == "/admin/access-keys/regenerate":
+                return self.handle_admin_access_keys_regenerate()
             if path == "/admin/import":
                 return self.handle_admin_import_submit()
             if path == "/admin/about":
@@ -1668,6 +2051,7 @@ class AppHandler(BaseHTTPRequestHandler):
             if path.startswith("/admin/case/"):
                 case_id = int(path.split("/")[-1])
                 return self.handle_admin_case_save(case_id)
+
             return self.respond_text("Не найдено", status=404)
         except Exception as exc:
             return self.respond_text(f"Внутренняя ошибка: {exc}", status=500)
@@ -1679,7 +2063,9 @@ class AppHandler(BaseHTTPRequestHandler):
         files: dict[str, Any] = {}
         body = self.rfile.read(content_length)
         if content_type.startswith("multipart/form-data"):
-            header_blob = (f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n").encode("utf-8")
+            header_blob = (
+                f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n"
+            ).encode("utf-8")
             message = BytesParser(policy=default).parsebytes(header_blob + body)
             for part in message.iter_parts():
                 disposition = part.get_content_disposition()
@@ -1695,8 +2081,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 else:
                     fields[name] = payload.decode("utf-8", errors="ignore")
         else:
-            parsed = parse_qs(body.decode("utf-8", errors="ignore"), keep_blank_values=True)
-            fields = {key: values[0] if values else "" for key, values in parsed.items()}
+            parsed = parse_qs(
+                body.decode("utf-8", errors="ignore"), keep_blank_values=True
+            )
+            fields = {
+                key: values[0] if values else "" for key, values in parsed.items()
+            }
         return fields, files
 
     def set_session(self) -> str:
@@ -1718,6 +2108,37 @@ class AppHandler(BaseHTTPRequestHandler):
             return token
         return None
 
+    def get_access_key_from_cookie(self) -> str | None:
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+
+        cookie = SimpleCookie()
+        cookie.load(raw)
+        morsel = cookie.get(ACCESS_COOKIE)
+        if not morsel:
+            return None
+
+        return normalize_spaces(morsel.value).upper()
+
+    def has_public_access(self) -> bool:
+        if self.get_session_token():
+            return True
+
+        access_key = self.get_access_key_from_cookie()
+        if not access_key:
+            return False
+
+        return AccessKeysRepository.is_valid_key(access_key)
+
+    def require_public_access(self) -> bool:
+        if self.has_public_access():
+            return True
+
+        next_url = quote(self.path, safe="")
+        self.redirect(f"/access?next={next_url}")
+        return False
+
     def require_admin(self) -> bool:
         token = self.get_session_token()
         if token:
@@ -1725,7 +2146,9 @@ class AppHandler(BaseHTTPRequestHandler):
         self.redirect("/admin/login")
         return False
 
-    def respond_html(self, payload: bytes, status: int = 200, headers: dict[str, str] | None = None) -> None:
+    def respond_html(
+        self, payload: bytes, status: int = 200, headers: dict[str, str] | None = None
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -1735,7 +2158,13 @@ class AppHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def respond_bytes(self, payload: bytes, content_type: str, status: int = 200, headers: dict[str, str] | None = None) -> None:
+    def respond_bytes(
+        self,
+        payload: bytes,
+        content_type: str,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
@@ -1746,7 +2175,9 @@ class AppHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def respond_text(self, text: str, status: int = 200) -> None:
-        self.respond_bytes(text.encode("utf-8"), "text/plain; charset=utf-8", status=status)
+        self.respond_bytes(
+            text.encode("utf-8"), "text/plain; charset=utf-8", status=status
+        )
 
     def redirect(self, location: str, headers: dict[str, str] | None = None) -> None:
         self.send_response(302)
@@ -1763,7 +2194,9 @@ class AppHandler(BaseHTTPRequestHandler):
         if not target.exists() or not target.is_file():
             return self.respond_text("Not found", status=404)
         content_type, _ = mimetypes.guess_type(target.name)
-        self.respond_bytes(target.read_bytes(), content_type or "application/octet-stream")
+        self.respond_bytes(
+            target.read_bytes(), content_type or "application/octet-stream"
+        )
 
     def handle_uploads(self, path: str) -> None:
         target = (UPLOADS_DIR / path.removeprefix("/uploads/")).resolve()
@@ -1772,8 +2205,67 @@ class AppHandler(BaseHTTPRequestHandler):
         if not target.exists() or not target.is_file():
             return self.respond_text("Not found", status=404)
         content_type, _ = mimetypes.guess_type(target.name)
-        self.respond_bytes(target.read_bytes(), content_type or "application/octet-stream")
+        self.respond_bytes(
+            target.read_bytes(), content_type or "application/octet-stream"
+        )
 
+    def handle_access_page(self, query: dict[str, list[str]], flash: str = "") -> None:
+        next_url = query.get("next", ["/"])[0] or "/"
+        if not next_url.startswith("/") or next_url.startswith("//"):
+            next_url = "/"
+
+        flash_html = f'<div class="flash">{html_escape(flash)}</div>' if flash else ""
+
+        body = f"""
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Доступ к библиотеке</title>
+          <link rel="stylesheet" href="/static/style.css">
+        </head>
+        <body>
+          <main class="access-page">
+            <section class="access-card">
+              <div class="eyebrow">Закрытый доступ</div>
+              <h1>Введите ключ доступа</h1>
+              <p class="lead">Для просмотра библиотеки необходим индивидуальный ключ использования.</p>
+              {flash_html}
+              <form method="post" class="stack">
+                <input type="hidden" name="next" value="{html_escape(next_url)}">
+                <label class="form-field">
+                  <span>Ключ доступа</span>
+                  <input type="text" name="access_key" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" required>
+                </label>
+                <button type="submit">Открыть доступ</button>
+              </form>
+              <p class="muted">Для редакции используйте вход администратора по прямой ссылке.</p>
+            </section>
+          </main>
+        </body>
+        </html>
+        """
+        self.respond_html(body.encode("utf-8"))
+
+    def handle_access_submit(self) -> None:
+        fields, _ = self.parse_form_data()
+        access_key = normalize_spaces(fields.get("access_key", "")).upper()
+        next_url = fields.get("next", "/") or "/"
+
+        if not next_url.startswith("/") or next_url.startswith("//"):
+            next_url = "/"
+
+        if not AccessKeysRepository.is_valid_key(access_key):
+            return self.handle_access_page(
+                {"next": [next_url]}, flash="Неверный ключ доступа."
+            )
+
+        AccessKeysRepository.register_usage(access_key)
+        headers = {
+            "Set-Cookie": f"{ACCESS_COOKIE}={access_key}; HttpOnly; Path=/; SameSite=Lax"
+        }
+        self.redirect(next_url, headers=headers)
 
     def handle_home(self) -> None:
         section_cards = "".join(
@@ -1831,7 +2323,6 @@ class AppHandler(BaseHTTPRequestHandler):
         """
         self.respond_html(render_public_layout("Главная", body))
 
-
     def handle_section(self, section: str, query: dict[str, list[str]]) -> None:
         if section not in SECTION_LABELS:
             return self.respond_text("Раздел не найден", status=404)
@@ -1840,8 +2331,18 @@ class AppHandler(BaseHTTPRequestHandler):
         violation_type = query.get("violation_type", [""])[0]
         year = query.get("year", [""])[0]
         sort = query.get("sort", ["new"])[0]
-        items = CasesRepository.list_public(section=section, q=q, country=country, violation_type=violation_type, year=year, sort=sort)
-        cards = "".join(render_case_card(case) for case in items) or '<div class="empty">По заданным условиям кейсы не найдены.</div>'
+        items = CasesRepository.list_public(
+            section=section,
+            q=q,
+            country=country,
+            violation_type=violation_type,
+            year=year,
+            sort=sort,
+        )
+        cards = (
+            "".join(render_case_card(case) for case in items)
+            or '<div class="empty">По заданным условиям кейсы не найдены.</div>'
+        )
         body = f"""
           <section class="page-hero slim">
             <div>
@@ -1853,24 +2354,39 @@ class AppHandler(BaseHTTPRequestHandler):
           {build_public_filters(section, q, country, violation_type, year, sort)}
           <section class="cards-grid">{cards}</section>
         """
-        self.respond_html(render_public_layout(SECTION_LABELS[section], body, current_section=section))
-
+        self.respond_html(
+            render_public_layout(SECTION_LABELS[section], body, current_section=section)
+        )
 
     def handle_case(self, slug: str) -> None:
         case = CasesRepository.get_case_by_slug(slug)
         if case is None:
             return self.respond_text("Кейс не найден", status=404)
         sources = CasesRepository.get_sources(case["id"])
-        related = CasesRepository.list_related_by_violation(case["id"], case["violation_type"], limit=3)
-        related_html = "".join(
-            f'<a class="related-item" href="/case/{html_escape(item["slug"])}"><strong>{html_escape(item["full_name"])}</strong><span>{html_escape(item["short_description"])}</span></a>'
-            for item in related
-        ) or '<div class="muted">Похожие кейсы появятся по мере наполнения библиотеки.</div>'
+        related = CasesRepository.list_related_by_violation(
+            case["id"], case["violation_type"], limit=3
+        )
+        related_html = (
+            "".join(
+                f'<a class="related-item" href="/case/{html_escape(item["slug"])}"><strong>{html_escape(item["full_name"])}</strong><span>{html_escape(item["short_description"])}</span></a>'
+                for item in related
+            )
+            or '<div class="muted">Похожие кейсы появятся по мере наполнения библиотеки.</div>'
+        )
 
-        source_items = "".join(
-            f'<li><div>{html_escape(src["gost_text"])}</div>' + (f'<a href="{html_escape(src["url"])}" target="_blank" rel="noopener">Открыть источник</a>' if src["url"] else "") + '</li>'
-            for src in sources
-        ) or '<li>Источники не добавлены.</li>'
+        source_items = (
+            "".join(
+                f"<li><div>{html_escape(src['gost_text'])}</div>"
+                + (
+                    f'<a href="{html_escape(src["url"])}" target="_blank" rel="noopener">Открыть источник</a>'
+                    if src["url"]
+                    else ""
+                )
+                + "</li>"
+                for src in sources
+            )
+            or "<li>Источники не добавлены.</li>"
+        )
 
         basic_fields = [
             ("Страна", case["country"]),
@@ -1886,18 +2402,25 @@ class AppHandler(BaseHTTPRequestHandler):
             for label, value in basic_fields
         )
 
-        chips = [case["country"] or case["organization"], case["year_or_period"], case["violation_type"], case["risk_sector"]]
-        chip_html = "".join(f'<span class="chip">{html_escape(item)}</span>' for item in chips if item)
+        chips = [
+            case["country"] or case["organization"],
+            case["year_or_period"],
+            case["violation_type"],
+            case["risk_sector"],
+        ]
+        chip_html = "".join(
+            f'<span class="chip">{html_escape(item)}</span>' for item in chips if item
+        )
 
         body = f"""
         <article class="case-layout">
           <section class="case-main">
             <div class="page-hero case-top">
               <div>
-                <div class="eyebrow">{html_escape(SECTION_SHORT.get(case['section'], case['section']))}</div>
-                <h1>{html_escape(case['full_name'])}</h1>
+                <div class="eyebrow">{html_escape(SECTION_SHORT.get(case["section"], case["section"]))}</div>
+                <h1>{html_escape(case["full_name"])}</h1>
                 <div class="chip-row">{chip_html}</div>
-                <p class="lead">{html_escape(case['short_description'])}</p>
+                <p class="lead">{html_escape(case["short_description"])}</p>
               </div>
             </div>
 
@@ -1912,12 +2435,12 @@ class AppHandler(BaseHTTPRequestHandler):
 
             <section id="basic" class="case-section"><h2>Базовые данные</h2><div class="basic-grid">{basics_html}</div></section>
             {f'<section class="case-section violation-case-description"><h2>Тип коррупционного поведения</h2>{text_to_paragraphs(case["violation_description"])}</section>' if "violation_description" in case.keys() and case["violation_description"] else ""}
-            <section id="summary" class="case-section"><h2>Фабула дела</h2>{text_to_paragraphs(case['case_summary'])}</section>
-            <section id="qualification" class="case-section"><h2>Правовая квалификация</h2>{text_to_paragraphs(case['legal_qualification'])}</section>
-            <section id="progress" class="case-section"><h2>Ход дела</h2>{text_to_paragraphs(case['case_progress'])}</section>
-            <section id="effects" class="case-section"><h2>Последствия</h2>{text_to_paragraphs(case['consequences'])}</section>
-            <section class="case-section"><h2>Институциональные эффекты</h2>{text_to_paragraphs(case['institutional_effects'])}</section>
-            <section id="lessons" class="case-section accent-section"><h2>Выводы и уроки для антикоррупционной политики</h2>{text_to_paragraphs(case['policy_lessons'])}</section>
+            <section id="summary" class="case-section"><h2>Фабула дела</h2>{text_to_paragraphs(case["case_summary"])}</section>
+            <section id="qualification" class="case-section"><h2>Правовая квалификация</h2>{text_to_paragraphs(case["legal_qualification"])}</section>
+            <section id="progress" class="case-section"><h2>Ход дела</h2>{text_to_paragraphs(case["case_progress"])}</section>
+            <section id="effects" class="case-section"><h2>Последствия</h2>{text_to_paragraphs(case["consequences"])}</section>
+            <section class="case-section"><h2>Институциональные эффекты</h2>{text_to_paragraphs(case["institutional_effects"])}</section>
+            <section id="lessons" class="case-section accent-section"><h2>Выводы и уроки для антикоррупционной политики</h2>{text_to_paragraphs(case["policy_lessons"])}</section>
             <section class="case-section"><h2>Источники</h2><ol class="sources-list">{source_items}</ol></section>
           </section>
 
@@ -1925,14 +2448,14 @@ class AppHandler(BaseHTTPRequestHandler):
             <div class="sidebar-card">
               <h3>Паспорт кейса</h3>
               <div class="sidebar-meta">
-                <div><span>Год</span><strong>{html_escape(case['year_or_period'] or '—')}</strong></div>
-                <div><span>Юрисдикция</span><strong>{html_escape(case['jurisdiction'] or '—')}</strong></div>
+                <div><span>Год</span><strong>{html_escape(case["year_or_period"] or "—")}</strong></div>
+                <div><span>Юрисдикция</span><strong>{html_escape(case["jurisdiction"] or "—")}</strong></div>
               </div>
-              <a class="primary-link full" href="/case/{html_escape(case['slug'])}/pdf">Скачать PDF</a>
+              <a class="primary-link full" href="/case/{html_escape(case["slug"])}/pdf">Скачать PDF</a>
             </div>
             <div class="sidebar-card">
               <h3>Ключевой риск</h3>
-              <p>{html_escape(case['risk_sector'] or case['violation_type'] or 'Коррупционный риск не указан.')}</p>
+              <p>{html_escape(case["risk_sector"] or case["violation_type"] or "Коррупционный риск не указан.")}</p>
             </div>
             <div class="sidebar-card">
               <h3>Похожие кейсы</h3>
@@ -1941,16 +2464,25 @@ class AppHandler(BaseHTTPRequestHandler):
           </aside>
         </article>
         """
-        self.respond_html(render_public_layout(case["full_name"], body, current_section=case["section"]))
+        self.respond_html(
+            render_public_layout(
+                case["full_name"], body, current_section=case["section"]
+            )
+        )
 
     def handle_case_pdf(self, slug: str) -> None:
         case = CasesRepository.get_case_by_slug(slug)
         if case is None:
-            return self.respond_text("PDF доступен только для опубликованного кейса", status=404)
+            return self.respond_text(
+                "PDF доступен только для опубликованного кейса", status=404
+            )
         sources = CasesRepository.get_sources(case["id"])
         payload = generate_case_pdf(case, sources)
-        self.respond_bytes(payload, "application/pdf", headers={"Content-Disposition": f'inline; filename="{slug}.pdf"'})
-
+        self.respond_bytes(
+            payload,
+            "application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{slug}.pdf"'},
+        )
 
     def handle_about(self) -> None:
         about = CasesRepository.get_about()
@@ -1963,14 +2495,15 @@ class AppHandler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="about-grid">
-          <article class="info-card"><h2>{ABOUT_PAGE_LABELS['goal']}</h2>{text_to_paragraphs(about['goal'])}</article>
-          <article class="info-card"><h2>{ABOUT_PAGE_LABELS['methodology']}</h2>{text_to_paragraphs(about['methodology'])}</article>
-          <article class="info-card"><h2>{ABOUT_PAGE_LABELS['contacts']}</h2>{text_to_paragraphs(about['contacts'])}</article>
-          <article class="info-card"><h2>{ABOUT_PAGE_LABELS['education_note']}</h2>{text_to_paragraphs(about['education_note'])}</article>
+          <article class="info-card"><h2>{ABOUT_PAGE_LABELS["goal"]}</h2>{text_to_paragraphs(about["goal"])}</article>
+          <article class="info-card"><h2>{ABOUT_PAGE_LABELS["methodology"]}</h2>{text_to_paragraphs(about["methodology"])}</article>
+          <article class="info-card"><h2>{ABOUT_PAGE_LABELS["contacts"]}</h2>{text_to_paragraphs(about["contacts"])}</article>
+          <article class="info-card"><h2>{ABOUT_PAGE_LABELS["education_note"]}</h2>{text_to_paragraphs(about["education_note"])}</article>
         </section>
         """
-        self.respond_html(render_public_layout("О проекте", body, current_section="about"))
-
+        self.respond_html(
+            render_public_layout("О проекте", body, current_section="about")
+        )
 
     def handle_search(self, query: dict[str, list[str]]) -> None:
         q = query.get("q", [""])[0].strip()
@@ -1980,8 +2513,13 @@ class AppHandler(BaseHTTPRequestHandler):
                 results_by_section[case["section"]].append(case)
         groups = []
         for slug, label in SECTION_LABELS.items():
-            cards = "".join(render_case_card(case) for case in results_by_section[slug]) or '<div class="empty small">Нет результатов.</div>'
-            groups.append(f'<section class="section-block"><div class="section-head"><h2>{html_escape(label)}</h2><span class="muted">{len(results_by_section[slug])} найдено</span></div><div class="cards-grid">{cards}</div></section>')
+            cards = (
+                "".join(render_case_card(case) for case in results_by_section[slug])
+                or '<div class="empty small">Нет результатов.</div>'
+            )
+            groups.append(
+                f'<section class="section-block"><div class="section-head"><h2>{html_escape(label)}</h2><span class="muted">{len(results_by_section[slug])} найдено</span></div><div class="cards-grid">{cards}</div></section>'
+            )
         body = f"""
         <section class="page-hero slim">
           <div>
@@ -1994,12 +2532,12 @@ class AppHandler(BaseHTTPRequestHandler):
           <div class="search-slot"><input type="search" name="q" value="{html_escape(q)}" placeholder="Введите запрос"></div>
           <button type="submit">Искать</button>
         </form>
-        {''.join(groups)}
+        {"".join(groups)}
         """
         self.respond_html(render_public_layout("Поиск", body))
 
     def handle_admin_login_page(self) -> None:
-        body = '''
+        body = """
         <div class="login-card">
           <h1>Вход администратора</h1>
           <form method="post" class="stack">
@@ -2009,22 +2547,35 @@ class AppHandler(BaseHTTPRequestHandler):
           </form>
           <p class="muted">По умолчанию: admin / 123</p>
         </div>
-        '''
+        """
         self.respond_html(render_public_layout("Вход", body))
 
     def handle_admin_login(self) -> None:
         fields, _ = self.parse_form_data()
-        if fields.get("login") == ADMIN_LOGIN and fields.get("password") == ADMIN_PASSWORD:
+        if (
+            fields.get("login") == ADMIN_LOGIN
+            and fields.get("password") == ADMIN_PASSWORD
+        ):
             token = self.set_session()
-            headers = {"Set-Cookie": f"{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax"}
+            headers = {
+                "Set-Cookie": f"{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax"
+            }
             return self.redirect("/admin", headers=headers)
-        self.respond_html(render_public_layout("Вход", '<div class="login-card"><h1>Вход администратора</h1><div class="flash">Неверный логин или пароль.</div><a class="ghost" href="/admin/login">Попробовать снова</a></div>'), status=401)
+        self.respond_html(
+            render_public_layout(
+                "Вход",
+                '<div class="login-card"><h1>Вход администратора</h1><div class="flash">Неверный логин или пароль.</div><a class="ghost" href="/admin/login">Попробовать снова</a></div>',
+            ),
+            status=401,
+        )
 
     def handle_admin_logout(self) -> None:
         token = self.get_session_token()
         if token and token in SESSIONS:
             del SESSIONS[token]
-        headers = {"Set-Cookie": f"{SESSION_COOKIE}=deleted; Max-Age=0; Path=/; SameSite=Lax"}
+        headers = {
+            "Set-Cookie": f"{SESSION_COOKIE}=deleted; Max-Age=0; Path=/; SameSite=Lax"
+        }
         self.redirect("/admin/login", headers=headers)
 
     def handle_admin_dashboard(self) -> None:
@@ -2040,12 +2591,72 @@ class AppHandler(BaseHTTPRequestHandler):
             ("Иностранные государства", stats["foreign"]),
             ("Международные организации", stats["intl_orgs"]),
         ]
-        cards_html = "".join(f'<div class="stat-card"><span>{html_escape(title)}</span><strong>{value}</strong></div>' for title, value in cards)
-        body = f'''
+        cards_html = "".join(
+            f'<div class="stat-card"><span>{html_escape(title)}</span><strong>{value}</strong></div>'
+            for title, value in cards
+        )
+        body = f"""
         <section class="page-head"><h1>Статистика</h1><p class="muted">Базовые счетчики по кейсам и статусам.</p></section>
         <div class="stats-grid">{cards_html}</div>
-        '''
+        """
         self.respond_html(render_admin_layout("Статистика", body))
+
+    def handle_admin_access_keys_page(self, flash: str = "") -> None:
+        if not self.require_admin():
+            return
+
+        keys = AccessKeysRepository.list_keys()
+        rows = (
+            "".join(
+                f"""
+            <tr>
+              <td><code>{html_escape(row["access_key"])}</code></td>
+              <td>{html_escape("активен" if row["is_active"] else "отключен")}</td>
+              <td>{html_escape(row["uses_count"])}</td>
+              <td>{html_escape(row["last_used_at"] or "—")}</td>
+              <td>{html_escape(row["created_at"] or "—")}</td>
+            </tr>
+            """
+                for row in keys
+            )
+            or '<tr><td colspan="5">Ключи еще не созданы.</td></tr>'
+        )
+
+        body = f"""
+        <section class="page-head admin-head">
+          <div>
+            <h1>Ключи доступа</h1>
+            <p class="muted">Эти ключи используются для доступа к публичной части сайта.</p>
+          </div>
+          <form method="post" action="/admin/access-keys/regenerate">
+            <button type="submit" class="ghost danger">Перегенерировать ключи</button>
+          </form>
+        </section>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Ключ</th>
+                <th>Статус</th>
+                <th>Использований</th>
+                <th>Последний вход</th>
+                <th>Создан</th>
+              </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </div>
+        """
+
+        self.respond_html(render_admin_layout("Ключи доступа", body, flash=flash))
+
+    def handle_admin_access_keys_regenerate(self) -> None:
+        if not self.require_admin():
+            return
+
+        AccessKeysRepository.regenerate_all()
+        self.handle_admin_access_keys_page(flash="Ключи доступа перегенерированы.")
 
     def handle_admin_cases(self, query: dict[str, list[str]]) -> None:
         if not self.require_admin():
@@ -2053,16 +2664,19 @@ class AppHandler(BaseHTTPRequestHandler):
         q = query.get("q", [""])[0]
         status = query.get("status", [""])[0]
         items = CasesRepository.list_admin(q=q, status=status)
-        rows = "".join(
-            f'''<tr>
-                <td>{html_escape(item['full_name'])}</td>
-                <td>{html_escape(SECTION_SHORT.get(item['section'], item['section']))}</td>
-                <td><span class="badge status-{html_escape(item['status'])}">{html_escape(item['status'])}</span></td>
-                <td>{html_escape(item['updated_at'])}</td>
-                <td><a href="/admin/case/{item['id']}">Открыть</a></td>
-            </tr>'''
-            for item in items
-        ) or '<tr><td colspan="5">Ничего не найдено.</td></tr>'
+        rows = (
+            "".join(
+                f"""<tr>
+                <td>{html_escape(item["full_name"])}</td>
+                <td>{html_escape(SECTION_SHORT.get(item["section"], item["section"]))}</td>
+                <td><span class="badge status-{html_escape(item["status"])}">{html_escape(item["status"])}</span></td>
+                <td>{html_escape(item["updated_at"])}</td>
+                <td><a href="/admin/case/{item["id"]}">Открыть</a></td>
+            </tr>"""
+                for item in items
+            )
+            or '<tr><td colspan="5">Ничего не найдено.</td></tr>'
+        )
         selected_all = "selected" if not status else ""
         selected_published = "selected" if status == "published" else ""
         selected_draft = "selected" if status == "draft" else ""
@@ -2126,23 +2740,26 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.respond_text("Кейс не найден", status=404)
             sources = CasesRepository.get_sources(case_id)
             case_payload = dict(case_row)
-            case_payload["sources"] = [{"gost_text": src["gost_text"], "url": src["url"] or ""} for src in sources]
+            case_payload["sources"] = [
+                {"gost_text": src["gost_text"], "url": src["url"] or ""}
+                for src in sources
+            ]
             title = f"Редактирование: {case_row['full_name']}"
         status_buttons = ""
         if case_id is not None and case_row is not None:
-            status_buttons = f'''
+            status_buttons = f"""
             <div class="status-actions">
               <form method="post" action="/admin/case/{case_id}/status"><input type="hidden" name="status" value="draft"><button class="ghost" type="submit">В черновик</button></form>
               <form method="post" action="/admin/case/{case_id}/status"><input type="hidden" name="status" value="published"><button type="submit">Опубликовать</button></form>
               <form method="post" action="/admin/case/{case_id}/status"><input type="hidden" name="status" value="hidden"><button class="ghost danger" type="submit">Скрыть</button></form>
             </div>
-            '''
-        body = f'''
+            """
+        body = f"""
         <section class="page-head admin-head"><div><h1>{html_escape(title)}</h1><p class="muted">Форма кейса со всеми основными блоками и источниками.</p></div>{status_buttons}</section>
         <form method="post" enctype="multipart/form-data" class="stack card-form">
           {build_case_form(case_payload)}
         </form>
-        '''
+        """
         self.respond_html(render_admin_layout(title, body, flash=flash))
 
     def handle_admin_case_save(self, case_id: int | None) -> None:
@@ -2153,20 +2770,26 @@ class AppHandler(BaseHTTPRequestHandler):
         short_description = fields.get("short_description", "").strip()
         slug = fields.get("slug", "").strip() or slugify(full_name)
         if not full_name or not short_description:
-            return self.handle_admin_case_form(case_id, flash="ФИО и краткое описание обязательны.")
+            return self.handle_admin_case_form(
+                case_id, flash="ФИО и краткое описание обязательны."
+            )
         existing = CasesRepository.get_case_by_id(case_id) if case_id else None
         photo_path = existing["photo_path"] if existing else None
         remove_photo = fields.get("remove_photo") == "1"
         uploaded_photo = files.get("photo")
         cropped_photo_data = fields.get("cropped_photo_data", "")
-        has_uploaded_photo = uploaded_photo is not None and getattr(uploaded_photo, "size", 0) > 0
+        has_uploaded_photo = (
+            uploaded_photo is not None and getattr(uploaded_photo, "size", 0) > 0
+        )
 
         if remove_photo or has_uploaded_photo:
             delete_photo_file(photo_path)
             photo_path = None
 
         if has_uploaded_photo:
-            cropped_photo_path = save_cropped_photo(cropped_photo_data, PHOTOS_DIR, "photo")
+            cropped_photo_path = save_cropped_photo(
+                cropped_photo_data, PHOTOS_DIR, "photo"
+            )
             if cropped_photo_path:
                 photo_path = cropped_photo_path
             else:
@@ -2184,7 +2807,9 @@ class AppHandler(BaseHTTPRequestHandler):
             "jurisdiction": fields.get("jurisdiction", "").strip(),
             "governance_level": fields.get("governance_level", "").strip(),
             "risk_sector": fields.get("risk_sector", "").strip(),
-            "violation_type": fields.get("violation_type", "").strip() if fields.get("violation_type", "").strip() in VIOLATION_PRESETS else "",
+            "violation_type": fields.get("violation_type", "").strip()
+            if fields.get("violation_type", "").strip() in VIOLATION_PRESETS
+            else "",
             "violation_description": fields.get("violation_description", "").strip(),
             "case_summary": fields.get("case_summary", "").strip(),
             "legal_qualification": fields.get("legal_qualification", "").strip(),
@@ -2212,13 +2837,13 @@ class AppHandler(BaseHTTPRequestHandler):
     def handle_admin_import_page(self, flash: str = "") -> None:
         if not self.require_admin():
             return
-        body = '''
+        body = """
         <section class="page-head"><h1>Импорт из Word</h1><p class="muted">Best effort: система пробует разложить .docx по структурным блокам и открыть редактор с заполненными полями.</p></section>
         <form method="post" enctype="multipart/form-data" class="stack card-form narrow">
           <label class="form-field"><span>Файл .docx</span><input type="file" name="docx_file" accept=".docx" required></label>
           <button type="submit">Импортировать</button>
         </form>
-        '''
+        """
         self.respond_html(render_admin_layout("Импорт из Word", body, flash=flash))
 
     def handle_admin_import_submit(self) -> None:
@@ -2234,7 +2859,10 @@ class AppHandler(BaseHTTPRequestHandler):
         parsed = parse_docx_bytes(content)
         parsed["slug"] = slugify(parsed["full_name"] or import_name)
         parsed["status"] = "draft"
-        parsed["short_description"] = parsed.get("short_description") or "Кейс импортирован из Word и требует проверки администратора."
+        parsed["short_description"] = (
+            parsed.get("short_description")
+            or "Кейс импортирован из Word и требует проверки администратора."
+        )
         case_id = CasesRepository.upsert_case(parsed)
         self.redirect(f"/admin/case/{case_id}")
 
@@ -2242,16 +2870,16 @@ class AppHandler(BaseHTTPRequestHandler):
         if not self.require_admin():
             return
         about = CasesRepository.get_about()
-        body = f'''
+        body = f"""
         <section class="page-head"><h1>Редактирование страницы «О проекте»</h1><p class="muted">Текст обновляется без участия программиста.</p></section>
         <form method="post" class="stack card-form">
-          {textarea_input("goal", ABOUT_PAGE_LABELS['goal'], about['goal'], rows=5)}
-          {textarea_input("methodology", ABOUT_PAGE_LABELS['methodology'], about['methodology'], rows=6)}
-          {textarea_input("contacts", ABOUT_PAGE_LABELS['contacts'], about['contacts'], rows=4)}
-          {textarea_input("education_note", ABOUT_PAGE_LABELS['education_note'], about['education_note'], rows=4)}
+          {textarea_input("goal", ABOUT_PAGE_LABELS["goal"], about["goal"], rows=5)}
+          {textarea_input("methodology", ABOUT_PAGE_LABELS["methodology"], about["methodology"], rows=6)}
+          {textarea_input("contacts", ABOUT_PAGE_LABELS["contacts"], about["contacts"], rows=4)}
+          {textarea_input("education_note", ABOUT_PAGE_LABELS["education_note"], about["education_note"], rows=4)}
           <div class="form-actions"><button type="submit">Сохранить</button></div>
         </form>
-        '''
+        """
         self.respond_html(render_admin_layout("О проекте", body, flash=flash))
 
     def handle_admin_about_save(self) -> None:
@@ -2284,15 +2912,18 @@ class AppHandler(BaseHTTPRequestHandler):
             """
 
         def simple_block(title: str, key: str, values: list[str]) -> str:
-            items = "".join(
-                f"""
+            items = (
+                "".join(
+                    f"""
                 <li class="dictionary-item">
                   <span>{html_escape(value)}</span>
                   {delete_form(key, value)}
                 </li>
                 """
-                for value in values
-            ) or '<li class="muted">Пока пусто.</li>'
+                    for value in values
+                )
+                or '<li class="muted">Пока пусто.</li>'
+            )
             return f"""
             <section class="dictionary-block">
               <h2>{html_escape(title)}</h2>
@@ -2306,17 +2937,20 @@ class AppHandler(BaseHTTPRequestHandler):
             </section>
             """
 
-        violation_items = "".join(
-            f"""
+        violation_items = (
+            "".join(
+                f"""
             <li class="dictionary-item violation-dictionary-item">
               <div class="dictionary-item-head">
-                <strong>{html_escape(row['name'])}</strong>
+                <strong>{html_escape(row["name"])}</strong>
                 <span class="locked-dictionary-note">фиксированный фильтр</span>
               </div>
             </li>
             """
-            for row in violations
-        ) or '<li class="muted">Пока пусто.</li>'
+                for row in violations
+            )
+            or '<li class="muted">Пока пусто.</li>'
+        )
 
         violation_block = f"""
         <section class="dictionary-block violation-dictionary-block">
@@ -2329,8 +2963,8 @@ class AppHandler(BaseHTTPRequestHandler):
         body = f"""
         <section class="page-head"><h1>Справочники</h1><p class="muted">Страны и организации можно добавлять и удалять. Типы нарушений уже добавлены как фиксированные фильтры.</p></section>
         <div class="dictionary-grid">
-          {simple_block('Страны', 'countries', countries)}
-          {simple_block('Организации', 'organizations', organizations)}
+          {simple_block("Страны", "countries", countries)}
+          {simple_block("Организации", "organizations", organizations)}
           {violation_block}
         </div>
         """
@@ -2348,8 +2982,12 @@ class AppHandler(BaseHTTPRequestHandler):
         if not value:
             return self.handle_admin_dictionaries_page(flash="Нужно указать значение.")
 
-        if dictionary == "violation_types" and action not in {"update_violation_description"}:
-            return self.handle_admin_dictionaries_page(flash="Типы нарушений являются фиксированными фильтрами. Подробное описание заполняется в форме конкретного кейса.")
+        if dictionary == "violation_types" and action not in {
+            "update_violation_description"
+        }:
+            return self.handle_admin_dictionaries_page(
+                flash="Типы нарушений являются фиксированными фильтрами. Подробное описание заполняется в форме конкретного кейса."
+            )
 
         if action == "delete":
             used_count = CasesRepository.count_dictionary_usage(dictionary, value)
@@ -2359,18 +2997,21 @@ class AppHandler(BaseHTTPRequestHandler):
                 )
             if CasesRepository.delete_dictionary_value(dictionary, value):
                 return self.handle_admin_dictionaries_page(flash="Значение удалено.")
-            return self.handle_admin_dictionaries_page(flash="Значение не найдено или не может быть удалено.")
+            return self.handle_admin_dictionaries_page(
+                flash="Значение не найдено или не может быть удалено."
+            )
 
         if action == "update_violation_description":
             description = fields.get("description", "").strip()
             if CasesRepository.update_violation_type_description(value, description):
-                return self.handle_admin_dictionaries_page(flash="Описание типа нарушения обновлено.")
+                return self.handle_admin_dictionaries_page(
+                    flash="Описание типа нарушения обновлено."
+                )
             return self.handle_admin_dictionaries_page(flash="Тип нарушения не найден.")
 
         description = fields.get("description", "").strip()
         CasesRepository.add_dictionary_value(dictionary, value, description=description)
         self.handle_admin_dictionaries_page(flash="Значение добавлено.")
-
 
 
 def create_style() -> None:
