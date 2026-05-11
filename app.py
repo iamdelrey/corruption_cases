@@ -3302,8 +3302,12 @@ def main() -> None:
     DB.init()
     admin_entry_key = AdminEntryRepository.get_entry_key()
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
-    print(f"Server started on http://{HOST}:{PORT}")
-    print(f"Admin entry URL: http://{HOST}:{PORT}/admin/login?entry={admin_entry_key}")
+    public_url = os.environ.get("RENDER_EXTERNAL_URL") or f"http://{HOST}:{PORT}"
+    print(f"Server started on http://{HOST}:{PORT}", flush=True)
+    print(
+        f"Admin entry URL: {public_url}/admin/login?entry={admin_entry_key}",
+        flush=True,
+    )
     server.serve_forever()
 
 
