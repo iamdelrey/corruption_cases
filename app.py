@@ -38,7 +38,14 @@ UPLOADS_DIR = BASE_DIR / "uploads"
 PHOTOS_DIR = UPLOADS_DIR / "photos"
 IMPORTS_DIR = UPLOADS_DIR / "imports"
 SEED_JSON_PATH = BASE_DIR / "seed_cases.json"
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+PDF_FONT_CANDIDATES = [
+    os.environ.get("CASES_PDF_FONT", ""),
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/usr/local/share/fonts/DejaVuSans.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/DejaVuSans.ttf",
+]
 HOST = os.environ.get("CASES_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CASES_PORT") or os.environ.get("PORT", "8080"))
 ADMIN_LOGIN = os.environ.get("ADMIN_LOGIN", "admin")
@@ -2027,11 +2034,12 @@ def build_case_form(case: dict[str, Any]) -> str:
 
 def generate_case_pdf(case: sqlite3.Row, sources: list[sqlite3.Row]) -> bytes:
     buffer = io.BytesIO()
-    if Path(FONT_PATH).exists():
-        pdfmetrics.registerFont(TTFont("DejaVuSans", FONT_PATH))
-        font_name = "DejaVuSans"
-    else:
-        font_name = "Helvetica"
+    font_name = "Helvetica"
+    for font_path in PDF_FONT_CANDIDATES:
+        if font_path and Path(font_path).exists():
+            pdfmetrics.registerFont(TTFont("CasePdfFont", font_path))
+            font_name = "CasePdfFont"
+            break
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     margin_x = 45
